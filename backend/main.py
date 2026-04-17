@@ -30,11 +30,11 @@ async def log_requests(request, call_next):
 
 @app.get("/")
 async def root():
-    return {"message": "Video to Image API is running", "version": "1.3.2"}
+    return {"message": "Video to Image API is running", "version": "1.3.3"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.3.2"}
+    return {"status": "ok", "version": "1.3.3"}
 
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "output"
@@ -156,4 +156,4 @@ async def process_video(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8080)

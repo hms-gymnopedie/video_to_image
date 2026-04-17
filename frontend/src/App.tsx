@@ -38,7 +38,7 @@ import {
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'http://localhost:8080';
 
 // Claude CLI inspired "Sand" Theme
 const sandTheme = createTheme({
@@ -232,7 +232,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.2" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.3" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
