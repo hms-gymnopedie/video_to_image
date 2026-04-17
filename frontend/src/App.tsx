@@ -45,7 +45,6 @@ import {
   Folder as FolderIcon,
   CreateNewFolder as CreateNewFolderIcon,
   Refresh as RefreshIcon,
-  BarChart as BarChartIcon,
 } from '@mui/icons-material';
 import { SimpleTreeView } from '@mui/x-tree-view/SimpleTreeView';
 import { TreeItem } from '@mui/x-tree-view/TreeItem';
@@ -132,7 +131,7 @@ function App() {
     try {
       const res = await axios.get(`${API_BASE_URL}/directories`);
       setDirectories(res.data);
-      if (!outputPath) setOutputPath(res.data.path);
+      if (!outputPath && res.data.path) setOutputPath(res.data.path);
     } catch (err) { console.error(err); }
   };
 
@@ -236,7 +235,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.6.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.6.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -259,7 +258,7 @@ function App() {
                       {[{ label: 'FILE_NAME', value: file.name }, { label: 'FILE_SIZE', value: `${(file.size / (1024 * 1024)).toFixed(2)} MB` }, ...(metadata ? [{ label: 'RESOLUTION', value: `${metadata.width} x ${metadata.height}` }, { label: 'VIDEO_FPS', value: metadata.avg_frame_rate }, { label: 'LENGTH', value: `${metadata.duration.toFixed(2)}s` }] : [])].map((item, idx) => (
                         <Box key={idx} sx={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #F0EDE5', pb: 0.5 }}>
                           <Typography variant="caption" color="textSecondary" sx={{ fontWeight: 'bold' }}>{item.label}:</Typography>
-                          <Typography variant="caption" sx={{ color: 'primary.main' }}>{item.value}</Typography>
+                          <Typography variant="caption" sx={{ color: 'primary.main', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.value}</Typography>
                         </Box>
                       ))}
                     </Box>
@@ -269,6 +268,24 @@ function App() {
 
               <Paper sx={{ p: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary">[02] CONFIGURATION</Typography>
+                
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- APPLICATION_PRESETS ---</Typography>
+                  <FormControl fullWidth size="small">
+                    <Select value={preset} onChange={(e) => applyPreset(e.target.value as keyof typeof PRESETS)} displayEmpty>
+                      <MenuItem value="" disabled>Select a Preset</MenuItem>
+                      {Object.entries(PRESETS).map(([key, p]) => (
+                        <MenuItem key={key} value={key}>
+                          <Box>
+                            <Typography variant="body2" fontWeight="bold">{key}</Typography>
+                            <Typography variant="caption" color="textSecondary">{p.label}</Typography>
+                          </Box>
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- OUTPUT_BROWSER --- <IconButton size="small" onClick={fetchDirectories}><RefreshIcon sx={{ fontSize: 14 }} /></IconButton></Typography>
                   <Box sx={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
@@ -276,6 +293,7 @@ function App() {
                   </Box>
                   <TextField fullWidth label="Selected Path" value={outputPath} size="small" variant="filled" slotProps={{ input: { readOnly: true } }} />
                 </Box>
+
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- EXTRACTION & BLUR ---</Typography>
                   <Grid container spacing={1}>

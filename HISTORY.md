@@ -1,7 +1,6 @@
 # Project Update History
 
-## [2026-04-16] Update V1.6.0
-- **Added:** Automated folder classification. Processed images are now organized into `sharp/` and `blur/` subdirectories within the output folder.
-- **Added:** Visual Analytics Bar Chart. Recharts integration to compare the ratio of sharp vs. blurry frames.
-- **Improved:** Results preview logic now supports nested subdirectory structures.
-- **Updated:** Versioning to V1.6.0.
+## [2026-04-16] Update V1.6.1
+- **Fixed:** Restored missing APPLICATION_PRESETS (3DGS, 2DGS, etc.) dropdown that was accidentally removed in the previous UI update.
+- **Improved:** Sidebar layout grouping for better usability.
+- **Updated:** Versioning to V1.6.1.
