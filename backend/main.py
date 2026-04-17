@@ -6,6 +6,7 @@ import cv2
 import json
 import traceback
 import time
+import math
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -40,7 +41,7 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.3.9"}
+    return {"status": "ok", "version": "1.4.1"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -131,7 +132,6 @@ async def process_video(
     os.makedirs(final_output_dir, exist_ok=True)
     
     try:
-        # Build FFmpeg command
         stream = ffmpeg.input(video_path)
         stream = ffmpeg.filter(stream, 'fps', fps=fps)
         if scale != "-1:-1":
@@ -145,41 +145,47 @@ async def process_video(
             .overwrite_output()
         )
         
-        print(f"DEBUG: Running FFmpeg to {output_pattern}")
+        print(f"DEBUG: Executing FFmpeg to {output_pattern}")
         process.run(capture_stdout=True, capture_stderr=True)
-        
     except ffmpeg.Error as e:
         error_msg = e.stderr.decode() if e.stderr else "Unknown FFmpeg error"
-        print(f"DEBUG: FFMPEG_ERROR: {error_msg}")
-        raise HTTPException(status_code=500, detail=f"FFmpeg failed: {error_msg[:200]}...")
+        raise HTTPException(status_code=500, detail=f"FFmpeg failed: {error_msg[:200]}")
 
-    # Wait a brief moment for filesystem to sync
-    time.sleep(0.5)
+    time.sleep(1.0) # More buffer time for large folders
 
     results = []
     is_internal = final_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
     
-    files = sorted([f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
-    
-    for filename in files:
-        img_path = os.path.join(final_output_dir, filename)
-        image = cv2.imread(img_path)
-        if image is None: continue
+    try:
+        files = sorted([f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+        print(f"DEBUG: Found {len(files)} files in output dir")
         
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        variance = cv2.Laplacian(gray, cv2.CV_64F).var()
-        
-        preview_url = None
-        if is_internal:
-            rel_path = os.path.relpath(img_path, os.path.abspath(DEFAULT_OUTPUT_DIR))
-            preview_url = f"/images/{rel_path}"
+        for filename in files:
+            img_path = os.path.join(final_output_dir, filename)
+            image = cv2.imread(img_path)
+            if image is None: continue
             
-        results.append({
-            "filename": filename,
-            "url": preview_url,
-            "score": round(variance, 2),
-            "is_blurry": variance < threshold
-        })
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+            
+            # Ensure JSON serializable (no NaN/Inf)
+            if math.isnan(variance) or math.isinf(variance):
+                variance = 0.0
+                
+            preview_url = None
+            if is_internal:
+                rel_path = os.path.relpath(img_path, os.path.abspath(DEFAULT_OUTPUT_DIR))
+                preview_url = f"/images/{rel_path}"
+                
+            results.append({
+                "filename": filename,
+                "url": preview_url,
+                "score": float(round(variance, 2)),
+                "is_blurry": variance < threshold
+            })
+    except Exception as e:
+        print(f"DEBUG: Analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
 
     return {"results": results, "output_dir": final_output_dir, "total": len(results)}
 
