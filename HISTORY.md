@@ -1,8 +1,8 @@
 # Project Update History
 
-## [2026-04-16] Update V1.3.8
-- **Fixed:** 404 error on `/directories` by re-organizing backend route definitions.
-- **Fixed:** React console warning for `InputProps` by switching to `slotProps` (MUI v5 standard).
-- **Fixed:** React console warning for `item` prop in Grid components by removing the redundant keyword.
-- **Improved:** Added loading state for Directory Browser in UI.
-- **Updated:** Versioning to V1.3.8.
+## [2026-04-16] Update V1.3.9
+- **Fixed:** FFmpeg 500 error by adding detailed logging and improving process execution logic.
+- **Added:** Pre-processing vs. Post-processing comparison view.
+- **Added:** "ALL_FRAMES" and "SHARP_ONLY" filter tabs in the results gallery.
+- **Added:** Real-time statistics (Sharp count, Blur count, Percentage) for processing results.
+- **Updated:** Versioning to V1.3.9.
