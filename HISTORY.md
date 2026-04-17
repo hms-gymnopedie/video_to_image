@@ -1,6 +1,7 @@
 # Project Update History
 
-## [2026-04-16] Update V1.6.1
-- **Fixed:** Restored missing APPLICATION_PRESETS (3DGS, 2DGS, etc.) dropdown that was accidentally removed in the previous UI update.
-- **Improved:** Sidebar layout grouping for better usability.
-- **Updated:** Versioning to V1.6.1.
+## [2026-04-16] Update V1.6.2
+- **Added:** Threshold Real-time Guide. Slider now shows descriptive levels (Lenient, Moderate, Strict, etc.) to help users pick the right value.
+- **Added:** Information tooltips for Extraction & Blur settings.
+- **Improved:** Code consistency across UI components.
+- **Updated:** Versioning to V1.6.2.

@@ -235,7 +235,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.6.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.6.2" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -295,13 +295,21 @@ function App() {
                 </Box>
 
                 <Box sx={{ mb: 3 }}>
-                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- EXTRACTION & BLUR ---</Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1, color: '#8C8273' }}>
+                    --- EXTRACTION & BLUR ---
+                    <Tooltip title="Laplacian Variance. Higher = Stricter filtering.">
+                      <InfoIcon sx={{ ml: 0.5, fontSize: 14 }} />
+                    </Tooltip>
+                  </Typography>
                   <Grid container spacing={1}>
                     <Grid item xs={4}><TextField fullWidth label="FPS" type="number" value={fps} onChange={(e) => setFps(Number(e.target.value))} size="small" /></Grid>
                     <Grid item xs={4}><TextField fullWidth label="Quality" type="number" value={qscale} onChange={(e) => setQscale(Number(e.target.value))} size="small" /></Grid>
                     <Grid item xs={4}><TextField fullWidth label="Thres" type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} size="small" /></Grid>
                   </Grid>
                   <Slider value={threshold} onChange={(_, v) => setThreshold(v as number)} min={0} max={500} step={5} sx={{ mt: 1 }} />
+                  <Typography variant="caption" sx={{ bgcolor: '#F4F1EA', p: 0.5, display: 'block', fontWeight: 'bold', color: 'primary.main', borderRadius: 0.5 }}>
+                    GUIDE: {threshold < 50 ? "Lenient" : threshold < 150 ? "Moderate" : threshold < 300 ? "Strict" : "Ultra-Strict"}
+                  </Typography>
                 </Box>
                 <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'EXEC_PROCESSING'}
