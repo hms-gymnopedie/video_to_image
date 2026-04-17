@@ -8,6 +8,7 @@ import traceback
 import time
 import math
 import asyncio
+import numpy as np
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -44,7 +45,7 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.5.3"}
+    return {"status": "ok", "version": "1.5.4"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -114,7 +115,9 @@ async def get_metadata(file_id: str):
 async def websocket_process(websocket: WebSocket, file_id: str):
     await websocket.accept()
     try:
-        data = await websocket.receive_json()
+        raw_data = await websocket.receive_text()
+        data = json.loads(raw_data)
+        
         fps = float(data.get('fps', 1.0))
         scale = data.get('scale', "-1:-1")
         qscale = int(data.get('qscale', 2))
@@ -140,8 +143,10 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         stream = ffmpeg.input(video_path)
         stream = ffmpeg.filter(stream, 'fps', fps=fps)
         if scale != "-1:-1":
-            w, h = scale.split(':')
-            stream = ffmpeg.filter(stream, 'scale', w=w, h=h)
+            try:
+                w, h = scale.split(':')
+                stream = ffmpeg.filter(stream, 'scale', w=w, h=h)
+            except: pass
         
         output_pattern = os.path.join(final_output_dir, naming_rule)
         
@@ -155,25 +160,21 @@ async def websocket_process(websocket: WebSocket, file_id: str):
                 print(f"FFmpeg Error: {e.stderr.decode() if e.stderr else str(e)}")
                 return False
 
-        # Simplified approach: Run monitoring and FFmpeg concurrently
         async def monitor_progress():
             while True:
-                files = [f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
                 try:
+                    files = [f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
                     await websocket.send_json({
                         "type": "progress",
-                        "current": len(files),
+                        "current": int(len(files)),
                         "message": f"EXTRACTING_FRAMES: {len(files)} generated"
                     })
                 except: break
                 await asyncio.sleep(1.0)
 
         monitor_task = asyncio.create_task(monitor_progress())
-        
-        # Execute FFmpeg
         success = await asyncio.to_thread(run_ffmpeg_sync)
-        
-        monitor_task.cancel() # Stop monitoring
+        monitor_task.cancel()
 
         if not success:
             await websocket.send_json({"type": "error", "message": "FFmpeg execution failed"})
@@ -191,28 +192,34 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             variance = cv2.Laplacian(gray, cv2.CV_64F).var()
-            if math.isnan(variance) or math.isinf(variance): variance = 0.0
+            
+            # CRITICAL FIX: Convert all to standard Python types for JSON
+            score_val = float(variance)
+            if math.isnan(score_val) or math.isinf(score_val): score_val = 0.0
+            is_blurry_val = bool(score_val < threshold)
                 
             preview_url = f"/images/{os.path.relpath(img_path, os.path.abspath(DEFAULT_OUTPUT_DIR))}" if is_internal else None
+            
             results.append({
-                "filename": filename,
+                "filename": str(filename),
                 "url": preview_url,
-                "score": float(round(variance, 2)),
-                "is_blurry": variance < threshold
+                "score": float(round(score_val, 2)),
+                "is_blurry": is_blurry_val
             })
             
             if i % 10 == 0 or i == len(files) - 1:
                 await websocket.send_json({
                     "type": "progress",
-                    "current": i + 1,
-                    "total": len(files),
+                    "current": int(i + 1),
+                    "total": int(len(files)),
                     "message": f"ANALYZING_BLUR: {i+1}/{len(files)}"
                 })
         
+        # FINAL FIX: Ensure everything in the dictionary is serializable
         await websocket.send_json({
             "type": "complete",
             "results": results,
-            "output_dir": final_output_dir
+            "output_dir": str(final_output_dir)
         })
 
     except WebSocketDisconnect:
