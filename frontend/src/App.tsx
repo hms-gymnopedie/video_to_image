@@ -50,7 +50,7 @@ import { SimpleTreeView } from '@mui/x-tree-view/SimpleTreeView';
 import { TreeItem } from '@mui/x-tree-view/TreeItem';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Cell, Legend } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 
 const API_BASE_URL = 'http://localhost:8080';
 const WS_BASE_URL = 'ws://localhost:8080';
@@ -224,15 +224,15 @@ function App() {
   const sharpCount = results.filter(r => !r.is_blurry).length;
   const blurCount = results.length - sharpCount;
 
-  // Chart Data
+  // Updated Chart Data with more descriptive names
   const countData = [
-    { name: 'SHARP', count: sharpCount, color: '#6B7A5F' },
-    { name: 'BLUR', count: blurCount, color: '#A65D57' }
+    { label: 'Sharp', count: sharpCount, color: '#6B7A5F' },
+    { label: 'Blur', count: blurCount, color: '#A65D57' }
   ];
 
   const scoreData = analytics ? [
-    { name: 'AVG_ALL', score: analytics.avg_all, color: '#D4CBB3' },
-    { name: 'AVG_SHARP', score: analytics.avg_sharp, color: '#6B7A5F' }
+    { label: 'AllAvg', score: analytics.avg_all, color: '#D4CBB3' },
+    { label: 'SharpAvg', score: analytics.avg_sharp, color: '#6B7A5F' }
   ] : [];
 
   const renderTree = (node: DirectoryNode) => (
@@ -252,7 +252,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.7.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.7.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -331,26 +331,30 @@ function App() {
                   <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER & VISUAL_ANALYTICS</Typography>
                   {results.length > 0 && (
                     <Box sx={{ display: 'flex', gap: 2 }}>
-                      <Box sx={{ width: 160, height: 100, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>COUNT_RATIO</Typography>
+                      {/* Count Chart */}
+                      <Box sx={{ width: 180, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>COUNT_DISTRIBUTION</Typography>
                         <ResponsiveContainer width="100%" height="80%">
-                          <BarChart data={countData} layout="vertical">
+                          <BarChart data={countData} layout="vertical" margin={{ left: -20, right: 30 }}>
                             <XAxis type="number" hide />
-                            <YAxis type="category" dataKey="name" hide />
+                            <YAxis type="category" dataKey="label" hide />
                             <Bar dataKey="count" radius={[0, 4, 4, 0]}>
                               {countData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                              <LabelList dataKey="count" position="right" fontSize={10} fill="#4A4238" />
                             </Bar>
                           </BarChart>
                         </ResponsiveContainer>
                       </Box>
-                      <Box sx={{ width: 160, height: 100, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>AVG_BLUR_SCORE</Typography>
+                      {/* Score Chart */}
+                      <Box sx={{ width: 180, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>AVG_BLUR_QUALITY</Typography>
                         <ResponsiveContainer width="100%" height="80%">
-                          <BarChart data={scoreData} layout="vertical">
+                          <BarChart data={scoreData} layout="vertical" margin={{ left: -20, right: 30 }}>
                             <XAxis type="number" hide />
-                            <YAxis type="category" dataKey="name" hide />
+                            <YAxis type="category" dataKey="label" hide />
                             <Bar dataKey="score" radius={[0, 4, 4, 0]}>
                               {scoreData.map((entry, index) => <Cell key={`cell-s-${index}`} fill={entry.color} />)}
+                              <LabelList dataKey="score" position="right" fontSize={10} fill="#4A4238" />
                             </Bar>
                           </BarChart>
                         </ResponsiveContainer>
