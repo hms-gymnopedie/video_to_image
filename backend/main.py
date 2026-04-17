@@ -45,7 +45,7 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.5.4"}
+    return {"status": "ok", "version": "1.6.0"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -135,8 +135,14 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             await websocket.send_json({"type": "error", "message": "Video not found"})
             return
 
-        final_output_dir = os.path.abspath(output_path.strip()) if output_path and output_path.strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
-        os.makedirs(final_output_dir, exist_ok=True)
+        base_output_dir = os.path.abspath(output_path.strip()) if output_path and output_path.strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
+        os.makedirs(base_output_dir, exist_ok=True)
+        
+        # Subdirectories for classification
+        sharp_dir = os.path.join(base_output_dir, "sharp")
+        blur_dir = os.path.join(base_output_dir, "blur")
+        os.makedirs(sharp_dir, exist_ok=True)
+        os.makedirs(blur_dir, exist_ok=True)
 
         await websocket.send_json({"type": "status", "message": "STARTING_FFMPEG"})
         
@@ -148,7 +154,10 @@ async def websocket_process(websocket: WebSocket, file_id: str):
                 stream = ffmpeg.filter(stream, 'scale', w=w, h=h)
             except: pass
         
-        output_pattern = os.path.join(final_output_dir, naming_rule)
+        # Temp folder for extraction before sorting
+        temp_extract_dir = os.path.join(base_output_dir, "temp_raw")
+        os.makedirs(temp_extract_dir, exist_ok=True)
+        output_pattern = os.path.join(temp_extract_dir, naming_rule)
         
         def run_ffmpeg_sync():
             try:
@@ -163,7 +172,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         async def monitor_progress():
             while True:
                 try:
-                    files = [f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
+                    files = [f for f in os.listdir(temp_extract_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
                     await websocket.send_json({
                         "type": "progress",
                         "current": int(len(files)),
@@ -180,25 +189,32 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             await websocket.send_json({"type": "error", "message": "FFmpeg execution failed"})
             return
 
-        await websocket.send_json({"type": "status", "message": "STARTING_BLUR_ANALYSIS"})
+        await websocket.send_json({"type": "status", "message": "CLASSIFYING_SHARP_VS_BLUR"})
         results = []
-        is_internal = final_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
-        files = sorted([f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+        is_internal = base_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
+        files = sorted([f for f in os.listdir(temp_extract_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
         
         for i, filename in enumerate(files):
-            img_path = os.path.join(final_output_dir, filename)
-            image = cv2.imread(img_path)
+            src_path = os.path.join(temp_extract_dir, filename)
+            image = cv2.imread(src_path)
             if image is None: continue
             
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             variance = cv2.Laplacian(gray, cv2.CV_64F).var()
             
-            # CRITICAL FIX: Convert all to standard Python types for JSON
             score_val = float(variance)
             if math.isnan(score_val) or math.isinf(score_val): score_val = 0.0
             is_blurry_val = bool(score_val < threshold)
-                
-            preview_url = f"/images/{os.path.relpath(img_path, os.path.abspath(DEFAULT_OUTPUT_DIR))}" if is_internal else None
+            
+            # Move to respective folder
+            target_dir = blur_dir if is_blurry_val else sharp_dir
+            dst_path = os.path.join(target_dir, filename)
+            shutil.move(src_path, dst_path)
+            
+            preview_url = None
+            if is_internal:
+                rel_path = os.path.relpath(dst_path, os.path.abspath(DEFAULT_OUTPUT_DIR))
+                preview_url = f"/images/{rel_path}"
             
             results.append({
                 "filename": str(filename),
@@ -215,11 +231,14 @@ async def websocket_process(websocket: WebSocket, file_id: str):
                     "message": f"ANALYZING_BLUR: {i+1}/{len(files)}"
                 })
         
-        # FINAL FIX: Ensure everything in the dictionary is serializable
+        # Cleanup temp raw folder
+        try: shutil.rmtree(temp_extract_dir)
+        except: pass
+
         await websocket.send_json({
             "type": "complete",
             "results": results,
-            "output_dir": str(final_output_dir)
+            "output_dir": str(base_output_dir)
         })
 
     except WebSocketDisconnect:
