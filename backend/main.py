@@ -44,7 +44,7 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.5.2"}
+    return {"status": "ok", "version": "1.5.3"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -132,11 +132,9 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             await websocket.send_json({"type": "error", "message": "Video not found"})
             return
 
-        # Setup paths
         final_output_dir = os.path.abspath(output_path.strip()) if output_path and output_path.strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
         os.makedirs(final_output_dir, exist_ok=True)
 
-        # 1. Start FFmpeg in background thread/process
         await websocket.send_json({"type": "status", "message": "STARTING_FFMPEG"})
         
         stream = ffmpeg.input(video_path)
@@ -147,35 +145,40 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         
         output_pattern = os.path.join(final_output_dir, naming_rule)
         
-        # We run it synchronously in this task for simplicity, but monitor file count
-        def run_ffmpeg():
+        def run_ffmpeg_sync():
             try:
                 (ffmpeg.output(stream, output_pattern, qscale=qscale)
                  .overwrite_output()
                  .run(capture_stdout=True, capture_stderr=True))
                 return True
             except ffmpeg.Error as e:
-                print(f"FFmpeg Error: {e.stderr.decode()}")
+                print(f"FFmpeg Error: {e.stderr.decode() if e.stderr else str(e)}")
                 return False
 
-        # Start monitoring in a loop while FFmpeg runs
-        ffmpeg_task = asyncio.create_task(asyncio.to_thread(run_ffmpeg))
-        
-        while not ffmpeg_task.done():
-            files = [f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
-            await websocket.send_json({
-                "type": "progress",
-                "current": len(files),
-                "message": f"EXTRACTING_FRAMES: {len(files)} generated"
-            })
-            await asyncio.sleep(0.5)
+        # Simplified approach: Run monitoring and FFmpeg concurrently
+        async def monitor_progress():
+            while True:
+                files = [f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
+                try:
+                    await websocket.send_json({
+                        "type": "progress",
+                        "current": len(files),
+                        "message": f"EXTRACTING_FRAMES: {len(files)} generated"
+                    })
+                except: break
+                await asyncio.sleep(1.0)
 
-        success = await ffmpeg_task
+        monitor_task = asyncio.create_task(monitor_progress())
+        
+        # Execute FFmpeg
+        success = await asyncio.to_thread(run_ffmpeg_sync)
+        
+        monitor_task.cancel() # Stop monitoring
+
         if not success:
             await websocket.send_json({"type": "error", "message": "FFmpeg execution failed"})
             return
 
-        # 2. Blur Analysis
         await websocket.send_json({"type": "status", "message": "STARTING_BLUR_ANALYSIS"})
         results = []
         is_internal = final_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
@@ -198,7 +201,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
                 "is_blurry": variance < threshold
             })
             
-            if i % 10 == 0: # Update every 10 images
+            if i % 10 == 0 or i == len(files) - 1:
                 await websocket.send_json({
                     "type": "progress",
                     "current": i + 1,

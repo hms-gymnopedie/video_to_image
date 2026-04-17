@@ -1,6 +1,6 @@
 # Project Update History
 
-## [2026-04-16] Update V1.5.2
-- **Fixed:** WebSocket processing error (`AttributeError: 'coroutine' object has no attribute 'done'`) by properly wrapping the background thread in an asyncio Task.
-- **Improved:** Robustness of real-time monitoring loop for FFmpeg frame extraction.
-- **Updated:** Versioning to V1.5.2.
+## [2026-04-16] Update V1.5.3
+- **Fixed:** Recurring WebSocket coroutine error. Replaced polling-based monitoring with a more robust concurrent task approach (`asyncio.create_task` for monitor + `await to_thread` for processing).
+- **Improved:** Stability of frame extraction and blur analysis pipeline.
+- **Updated:** Versioning to V1.5.3.
