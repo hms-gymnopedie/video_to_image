@@ -50,7 +50,7 @@ import { SimpleTreeView } from '@mui/x-tree-view/SimpleTreeView';
 import { TreeItem } from '@mui/x-tree-view/TreeItem';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, Cell, Legend } from 'recharts';
 
 const API_BASE_URL = 'http://localhost:8080';
 const WS_BASE_URL = 'ws://localhost:8080';
@@ -86,6 +86,14 @@ interface ProcessResult {
   is_blurry: boolean;
 }
 
+interface Analytics {
+  avg_all: number;
+  avg_sharp: number;
+  total_count: number;
+  sharp_count: number;
+  blur_count: number;
+}
+
 interface DirectoryNode {
   name: string;
   path: string;
@@ -106,6 +114,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [results, setResults] = useState<ProcessResult[]>([]);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [preset, setPreset] = useState('');
@@ -150,9 +159,7 @@ function App() {
   });
 
   const uploadVideo = async (selectedFile: File) => {
-    setLoading(true);
-    setMetadata(null);
-    setError(null);
+    setLoading(true); setMetadata(null); setError(null);
     const formData = new FormData();
     formData.append('file', selectedFile);
     try {
@@ -192,7 +199,7 @@ function App() {
 
   const handleProcess = () => {
     if (!fileId) return;
-    setProcessing(true); setResults([]); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
+    setProcessing(true); setResults([]); setAnalytics(null); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
     const ws = new WebSocket(`${WS_BASE_URL}/ws/process/${fileId}`);
     ws.onopen = () => ws.send(JSON.stringify({ fps, scale, qscale, naming_rule: namingRule, threshold, output_path: outputPath }));
     ws.onmessage = (event) => {
@@ -201,7 +208,11 @@ function App() {
         setProgressMsg(data.message);
         if (data.current) setCurrentProgress(data.current);
       } else if (data.type === 'complete') {
-        setResults(data.results); setProcessing(false); fetchDirectories(); ws.close();
+        setResults(data.results);
+        setAnalytics(data.analytics);
+        setProcessing(false);
+        fetchDirectories();
+        ws.close();
       } else if (data.type === 'error') {
         setError(`PROCESS_ERROR: ${data.message}`); setProcessing(false); ws.close();
       }
@@ -209,14 +220,20 @@ function App() {
     ws.onerror = () => { setError('WebSocket Connection Failed.'); setProcessing(false); };
   };
 
-  const filteredResults = tabValue === 0 ? results : results.filter(r => !r.is_blurry);
+  const filteredResults = tabValue === 0 ? results : (tabValue === 1 ? results.filter(r => !r.is_blurry) : results.filter(r => r.is_blurry));
   const sharpCount = results.filter(r => !r.is_blurry).length;
   const blurCount = results.length - sharpCount;
 
-  const chartData = [
+  // Chart Data
+  const countData = [
     { name: 'SHARP', count: sharpCount, color: '#6B7A5F' },
     { name: 'BLUR', count: blurCount, color: '#A65D57' }
   ];
+
+  const scoreData = analytics ? [
+    { name: 'AVG_ALL', score: analytics.avg_all, color: '#D4CBB3' },
+    { name: 'AVG_SHARP', score: analytics.avg_sharp, color: '#6B7A5F' }
+  ] : [];
 
   const renderTree = (node: DirectoryNode) => (
     <TreeItem key={node.path} itemId={node.path} label={
@@ -235,7 +252,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.6.2" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.7.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -268,24 +285,17 @@ function App() {
 
               <Paper sx={{ p: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary">[02] CONFIGURATION</Typography>
-                
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- APPLICATION_PRESETS ---</Typography>
                   <FormControl fullWidth size="small">
                     <Select value={preset} onChange={(e) => applyPreset(e.target.value as keyof typeof PRESETS)} displayEmpty>
                       <MenuItem value="" disabled>Select a Preset</MenuItem>
                       {Object.entries(PRESETS).map(([key, p]) => (
-                        <MenuItem key={key} value={key}>
-                          <Box>
-                            <Typography variant="body2" fontWeight="bold">{key}</Typography>
-                            <Typography variant="caption" color="textSecondary">{p.label}</Typography>
-                          </Box>
-                        </MenuItem>
+                        <MenuItem key={key} value={key}><Box><Typography variant="body2" fontWeight="bold">{key}</Typography><Typography variant="caption" color="textSecondary">{p.label}</Typography></Box></MenuItem>
                       ))}
                     </Select>
                   </FormControl>
                 </Box>
-
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- OUTPUT_BROWSER --- <IconButton size="small" onClick={fetchDirectories}><RefreshIcon sx={{ fontSize: 14 }} /></IconButton></Typography>
                   <Box sx={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
@@ -293,13 +303,10 @@ function App() {
                   </Box>
                   <TextField fullWidth label="Selected Path" value={outputPath} size="small" variant="filled" slotProps={{ input: { readOnly: true } }} />
                 </Box>
-
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1, color: '#8C8273' }}>
                     --- EXTRACTION & BLUR ---
-                    <Tooltip title="Laplacian Variance. Higher = Stricter filtering.">
-                      <InfoIcon sx={{ ml: 0.5, fontSize: 14 }} />
-                    </Tooltip>
+                    <Tooltip title="Laplacian Variance. Higher = Stricter filtering."><InfoIcon sx={{ ml: 0.5, fontSize: 14 }} /></Tooltip>
                   </Typography>
                   <Grid container spacing={1}>
                     <Grid item xs={4}><TextField fullWidth label="FPS" type="number" value={fps} onChange={(e) => setFps(Number(e.target.value))} size="small" /></Grid>
@@ -323,18 +330,31 @@ function App() {
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                   <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER & VISUAL_ANALYTICS</Typography>
                   {results.length > 0 && (
-                    <Box sx={{ width: 250, height: 100, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                      <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5 }}>CLASSIFICATION_RATIO</Typography>
-                      <ResponsiveContainer width="100%" height="80%">
-                        <BarChart data={chartData} layout="vertical" margin={{ left: -30 }}>
-                          <XAxis type="number" hide />
-                          <YAxis type="category" dataKey="name" hide />
-                          <ChartTooltip />
-                          <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-                            {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                      <Box sx={{ width: 160, height: 100, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>COUNT_RATIO</Typography>
+                        <ResponsiveContainer width="100%" height="80%">
+                          <BarChart data={countData} layout="vertical">
+                            <XAxis type="number" hide />
+                            <YAxis type="category" dataKey="name" hide />
+                            <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                              {countData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Box>
+                      <Box sx={{ width: 160, height: 100, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>AVG_BLUR_SCORE</Typography>
+                        <ResponsiveContainer width="100%" height="80%">
+                          <BarChart data={scoreData} layout="vertical">
+                            <XAxis type="number" hide />
+                            <YAxis type="category" dataKey="name" hide />
+                            <Bar dataKey="score" radius={[0, 4, 4, 0]}>
+                              {scoreData.map((entry, index) => <Cell key={`cell-s-${index}`} fill={entry.color} />)}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Box>
                     </Box>
                   )}
                 </Box>

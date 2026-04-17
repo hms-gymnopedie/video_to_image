@@ -45,7 +45,7 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.6.0"}
+    return {"status": "ok", "version": "1.7.0"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -146,6 +146,10 @@ async def websocket_process(websocket: WebSocket, file_id: str):
 
         await websocket.send_json({"type": "status", "message": "STARTING_FFMPEG"})
         
+        # Temp folder for extraction
+        temp_extract_dir = os.path.join(base_output_dir, "temp_raw")
+        os.makedirs(temp_extract_dir, exist_ok=True)
+        
         stream = ffmpeg.input(video_path)
         stream = ffmpeg.filter(stream, 'fps', fps=fps)
         if scale != "-1:-1":
@@ -154,9 +158,6 @@ async def websocket_process(websocket: WebSocket, file_id: str):
                 stream = ffmpeg.filter(stream, 'scale', w=w, h=h)
             except: pass
         
-        # Temp folder for extraction before sorting
-        temp_extract_dir = os.path.join(base_output_dir, "temp_raw")
-        os.makedirs(temp_extract_dir, exist_ok=True)
         output_pattern = os.path.join(temp_extract_dir, naming_rule)
         
         def run_ffmpeg_sync():
@@ -189,10 +190,13 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             await websocket.send_json({"type": "error", "message": "FFmpeg execution failed"})
             return
 
-        await websocket.send_json({"type": "status", "message": "CLASSIFYING_SHARP_VS_BLUR"})
+        await websocket.send_json({"type": "status", "message": "CLASSIFYING_AND_ANALYZING"})
         results = []
         is_internal = base_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
         files = sorted([f for f in os.listdir(temp_extract_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+        
+        all_scores = []
+        sharp_scores = []
         
         for i, filename in enumerate(files):
             src_path = os.path.join(temp_extract_dir, filename)
@@ -204,7 +208,11 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             
             score_val = float(variance)
             if math.isnan(score_val) or math.isinf(score_val): score_val = 0.0
+            
             is_blurry_val = bool(score_val < threshold)
+            all_scores.append(score_val)
+            if not is_blurry_val:
+                sharp_scores.append(score_val)
             
             # Move to respective folder
             target_dir = blur_dir if is_blurry_val else sharp_dir
@@ -235,10 +243,21 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         try: shutil.rmtree(temp_extract_dir)
         except: pass
 
+        # Calculate averages for analytics
+        avg_all = sum(all_scores) / len(all_scores) if all_scores else 0
+        avg_sharp = sum(sharp_scores) / len(sharp_scores) if sharp_scores else 0
+
         await websocket.send_json({
             "type": "complete",
             "results": results,
-            "output_dir": str(base_output_dir)
+            "output_dir": str(base_output_dir),
+            "analytics": {
+                "avg_all": float(round(avg_all, 2)),
+                "avg_sharp": float(round(avg_sharp, 2)),
+                "total_count": len(all_scores),
+                "sharp_count": len(sharp_scores),
+                "blur_count": len(all_scores) - len(sharp_scores)
+            }
         })
 
     except WebSocketDisconnect:
