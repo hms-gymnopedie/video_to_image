@@ -32,6 +32,7 @@ import {
   IconButton,
   Tabs,
   Tab,
+  LinearProgress,
 } from '@mui/material';
 import {
   CloudUpload as CloudUploadIcon,
@@ -51,6 +52,7 @@ import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:8080';
+const WS_BASE_URL = 'ws://localhost:8080';
 
 const sandTheme = createTheme({
   palette: {
@@ -105,6 +107,7 @@ function App() {
   const [results, setResults] = useState<ProcessResult[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Settings
   const [preset, setPreset] = useState('');
   const [fps, setFps] = useState(1);
   const [scale, setScale] = useState('-1:-1');
@@ -113,6 +116,11 @@ function App() {
   const [namingRule, setNamingRule] = useState('frame_%04d.jpg');
   const [threshold, setThreshold] = useState(100);
   const [outputPath, setOutputPath] = useState('');
+
+  // Progress
+  const [progressMsg, setProgressMsg] = useState('');
+  const [currentProgress, setCurrentProgress] = useState(0);
+  const [totalEstimated, setTotalEstimated] = useState(0);
 
   const [directories, setDirectories] = useState<DirectoryNode | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
@@ -155,10 +163,22 @@ function App() {
       const metaRes = await axios.get(`${API_BASE_URL}/metadata/${id}`);
       setMetadata(metaRes.data);
       setScale('-1:-1');
+      // Estimate total frames
+      if (metaRes.data) {
+        const rawFps = parseFloat(metaRes.data.avg_frame_rate);
+        setTotalEstimated(Math.ceil(metaRes.data.duration * fps));
+      }
     } catch (err: any) {
       setError(`CONNECTION_ERROR: ${err.message}`);
     } finally { setLoading(false); }
   };
+
+  // Recalculate estimated total when FPS changes
+  useEffect(() => {
+    if (metadata) {
+      setTotalEstimated(Math.ceil(metadata.duration * fps));
+    }
+  }, [fps, metadata]);
 
   const applyPreset = (key: keyof typeof PRESETS) => {
     const p = PRESETS[key];
@@ -181,32 +201,49 @@ function App() {
         parent_path: targetParentPath,
         new_name: newFolderName
       });
-      setNewFolderName('');
-      setIsDialogOpen(false);
-      fetchDirectories();
-    } catch (err: any) {
-      alert(`Folder creation failed: ${err.message}`);
-    }
+      setNewFolderName(''); setIsDialogOpen(false); fetchDirectories();
+    } catch (err: any) { alert(`Folder creation failed: ${err.message}`); }
   };
 
-  const handleProcess = async () => {
+  const handleProcess = () => {
     if (!fileId) return;
-    setProcessing(true); setResults([]); setError(null);
-    const formData = new FormData();
-    formData.append('fps', fps.toString());
-    formData.append('scale', scale);
-    formData.append('qscale', qscale.toString());
-    formData.append('naming_rule', namingRule);
-    formData.append('threshold', threshold.toString());
-    formData.append('output_path', outputPath);
-    try {
-      const res = await axios.post(`${API_BASE_URL}/process/${fileId}`, formData);
-      setResults(res.data.results);
-      fetchDirectories();
-    } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Processing failed.';
-      setError(`PROCESS_ERROR: ${msg}`);
-    } finally { setProcessing(false); }
+    setProcessing(true);
+    setResults([]);
+    setError(null);
+    setCurrentProgress(0);
+    setProgressMsg('CONNECTING_TO_PIPELINE...');
+
+    const ws = new WebSocket(`${WS_BASE_URL}/ws/process/${fileId}`);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        fps, scale, qscale, naming_rule: namingRule, threshold, output_path: outputPath
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'status') {
+        setProgressMsg(data.message);
+      } else if (data.type === 'progress') {
+        setCurrentProgress(data.current);
+        setProgressMsg(data.message);
+      } else if (data.type === 'complete') {
+        setResults(data.results);
+        setProcessing(false);
+        fetchDirectories();
+        ws.close();
+      } else if (data.type === 'error') {
+        setError(`PROCESS_ERROR: ${data.message}`);
+        setProcessing(false);
+        ws.close();
+      }
+    };
+
+    ws.onerror = (err) => {
+      setError('WebSocket Connection Failed.');
+      setProcessing(false);
+    };
   };
 
   const filteredResults = tabValue === 0 ? results : results.filter(r => !r.is_blurry);
@@ -234,7 +271,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.4.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.5.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -300,11 +337,11 @@ function App() {
                     <Grid item xs={12}><TextField fullWidth label="Custom Scale" value={scale} onChange={(e) => setScale(e.target.value)} size="small" /></Grid>
                   </Grid>
                 </Box>
-                <Box>
+                <Box sx={{ mb: 2 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- BLUR_THRESHOLD: {threshold} ---</Typography>
                   <Slider value={threshold} onChange={(_, v) => setThreshold(v as number)} min={0} max={500} step={5} />
                 </Box>
-                <Button fullWidth variant="contained" size="large" sx={{ mt: 3, py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing}>
+                <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'EXEC_PROCESSING'}
                 </Button>
               </Paper>
@@ -323,18 +360,30 @@ function App() {
                   )}
                 </Box>
                 {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+                
+                {processing && (
+                  <Box sx={{ mb: 3, p: 2, bgcolor: '#FDFCFB', border: '1px solid #E6E1D6' }}>
+                    <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 'bold' }}>{progressMsg}</Typography>
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={Math.min((currentProgress / (totalEstimated || 1)) * 100, 100)} 
+                      sx={{ height: 10, borderRadius: 1 }}
+                    />
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1 }}>
+                      <Typography variant="caption">Progress: {currentProgress} / {totalEstimated || '?'}</Typography>
+                      <Typography variant="caption">{Math.round((currentProgress / (totalEstimated || 1)) * 100)}%</Typography>
+                    </Box>
+                  </Box>
+                )}
+
                 <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
                   <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} textColor="primary" indicatorColor="primary">
                     <Tab label={`ALL_FRAMES (${results.length})`} sx={{ fontSize: '12px' }} />
                     <Tab label={`SHARP_ONLY (${sharpCount})`} sx={{ fontSize: '12px' }} icon={<CheckCircleIcon sx={{ fontSize: '16px' }} />} iconPosition="start" />
                   </Tabs>
                 </Box>
-                {processing ? (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mt: 15 }}>
-                    <CircularProgress size={40} thickness={2} sx={{ color: '#4A4238' }} />
-                    <Typography variant="body2" sx={{ mt: 2 }}>RUNNING_PIPELINE...</Typography>
-                  </Box>
-                ) : results.length > 0 ? (
+
+                {!processing && results.length > 0 ? (
                   <Grid container spacing={2}>
                     {filteredResults.map((res, index) => (
                       <Grid item xs={12} sm={6} md={4} lg={3} key={index}>
@@ -354,7 +403,7 @@ function App() {
                       </Grid>
                     ))}
                   </Grid>
-                ) : (
+                ) : !processing && results.length === 0 && !error && (
                   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '400px', opacity: 0.3 }}><ImageIcon sx={{ fontSize: 64 }} /></Box>
                 )}
               </Paper>
