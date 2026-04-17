@@ -9,6 +9,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from typing import List, Optional
 import ffmpeg
 
@@ -41,11 +42,11 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"message": "Video to Image API is running", "version": "1.3.6"}
+    return {"message": "Video to Image API is running", "version": "1.3.7"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.3.6"}
+    return {"status": "ok", "version": "1.3.7"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -99,7 +100,35 @@ async def get_metadata(file_id: str):
             "avg_frame_rate": f"{fps} FPS",
         }
     except Exception as e:
-        print(f"Metadata error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Directory Explorer APIs
+def get_dir_structure(root_path):
+    d = {'name': os.path.basename(root_path), 'path': root_path, 'children': []}
+    try:
+        for entry in os.scandir(root_path):
+            if entry.is_dir() and not entry.name.startswith('.'):
+                d['children'].append(get_dir_structure(entry.path))
+    except Exception:
+        pass
+    return d
+
+@app.get("/directories")
+async def list_directories():
+    root_abs = os.path.abspath(DEFAULT_OUTPUT_DIR)
+    return get_dir_structure(root_abs)
+
+class CreateDirRequest(BaseModel):
+    parent_path: str
+    new_name: str
+
+@app.post("/create-directory")
+async def create_directory(data: CreateDirRequest):
+    new_path = os.path.join(data.parent_path, data.new_name)
+    try:
+        os.makedirs(new_path, exist_ok=True)
+        return {"status": "success", "path": new_path}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/process/{file_id}")
@@ -121,7 +150,6 @@ async def process_video(
     if not video_path:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Use custom path if provided, else use default internal output dir
     if output_path and output_path.strip():
         final_output_dir = os.path.abspath(output_path.strip())
     else:
@@ -144,6 +172,9 @@ async def process_video(
         raise HTTPException(status_code=500, detail=f"FFmpeg process failed: {stderr}")
 
     results = []
+    # Serve images differently depending on path to ensure preview works if possible
+    is_internal = final_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
+    
     for filename in sorted(os.listdir(final_output_dir)):
         if filename.lower().endswith((".jpg", ".jpeg", ".png")):
             img_path = os.path.join(final_output_dir, filename)
@@ -153,11 +184,15 @@ async def process_video(
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             variance = cv2.Laplacian(gray, cv2.CV_64F).var()
             
-            # For result display, we still need a URL. 
-            # If it's a custom path outside of DEFAULT_OUTPUT_DIR, we handle it as a relative link for now.
+            # Simplified preview logic: only show preview for internal paths
+            preview_url = None
+            if is_internal:
+                rel_path = os.path.relpath(img_path, os.path.abspath(DEFAULT_OUTPUT_DIR))
+                preview_url = f"/images/{rel_path}"
+
             results.append({
                 "filename": filename,
-                "url": f"/images/{file_id}/{filename}" if not output_path else f"/images/{filename}", # Simplification for preview
+                "url": preview_url,
                 "score": round(variance, 2),
                 "is_blurry": variance < threshold,
                 "full_path": img_path
