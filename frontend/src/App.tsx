@@ -232,7 +232,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.3" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.4" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -268,132 +268,141 @@ function App() {
 
                 {file && (
                   <Box sx={{ mt: 3, p: 2, bgcolor: '#FFFFFF', border: '1px solid #E6E1D6' }}>
-                    <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                      <MovieIcon sx={{ mr: 1, fontSize: 18 }} /> SUMMARY
+                    <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', mb: 1.5, fontWeight: 'bold' }}>
+                      <MovieIcon sx={{ mr: 1, fontSize: 18 }} /> [DATA_SUMMARY]
                     </Typography>
-                    <Divider sx={{ mb: 1 }} />
-                    <Grid container spacing={1}>
-                      <Grid item xs={6}><Typography variant="caption" color="textSecondary">FILE_NAME:</Typography></Grid>
-                      <Grid item xs={6}><Typography variant="caption" noWrap>{file.name}</Typography></Grid>
-                      
-                      <Grid item xs={6}><Typography variant="caption" color="textSecondary">FILE_SIZE:</Typography></Grid>
-                      <Grid item xs={6}><Typography variant="caption">{(file.size / (1024 * 1024)).toFixed(2)} MB</Typography></Grid>
+                    
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      {[
+                        { label: 'FILE_NAME', value: file.name },
+                        { label: 'FILE_SIZE', value: `${(file.size / (1024 * 1024)).toFixed(2)} MB` },
+                        ...(metadata ? [
+                          { label: 'RESOLUTION', value: `${metadata.width} x ${metadata.height}` },
+                          { label: 'VIDEO_FPS', value: metadata.avg_frame_rate },
+                          { label: 'LENGTH', value: `${metadata.duration.toFixed(2)}s` },
+                          { label: 'ASPECT', value: `${(metadata.width / metadata.height).toFixed(2)}:1` }
+                        ] : [])
+                      ].map((item, idx) => (
+                        <Box key={idx} sx={{ 
+                          display: 'flex', 
+                          justifyContent: 'space-between', 
+                          borderBottom: '1px solid #F0EDE5',
+                          pb: 0.5
+                        }}>
+                          <Typography variant="caption" color="textSecondary" sx={{ fontWeight: 'bold' }}>{item.label}:</Typography>
+                          <Typography variant="caption" sx={{ color: 'primary.main', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {item.value}
+                          </Typography>
+                        </Box>
+                      ))}
                       
                       {loading && (
-                        <Grid item xs={12} sx={{ textAlign: 'center', py: 1 }}>
-                          <CircularProgress size={16} sx={{ mr: 1 }} />
-                          <Typography variant="caption">ANALYZING_METADATA...</Typography>
-                        </Grid>
+                        <Box sx={{ textAlign: 'center', py: 1 }}>
+                          <CircularProgress size={14} sx={{ mr: 1 }} />
+                          <Typography variant="caption" color="textSecondary">ANALYZING...</Typography>
+                        </Box>
                       )}
-                      
-                      {metadata && !loading && (
-                        <>
-                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">RESOLUTION:</Typography></Grid>
-                          <Grid item xs={6}><Typography variant="caption">{metadata.width} x {metadata.height}</Typography></Grid>
-                          
-                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">VIDEO_FPS:</Typography></Grid>
-                          <Grid item xs={6}><Typography variant="caption">{metadata.avg_frame_rate}</Typography></Grid>
-                          
-                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">LENGTH:</Typography></Grid>
-                          <Grid item xs={6}><Typography variant="caption">{metadata.duration.toFixed(2)}s</Typography></Grid>
-                          
-                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">ASPECT_RATIO:</Typography></Grid>
-                          <Grid item xs={6}><Typography variant="caption">{(metadata.width / metadata.height).toFixed(2)}:1</Typography></Grid>
-                        </>
-                      )}
-                    </Grid>
+                    </Box>
                   </Box>
                 )}
               </Paper>
 
               <Paper sx={{ p: 3, bgcolor: '#FDFCFB' }}>
-                <Typography variant="subtitle2" gutterBottom color="textSecondary" sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" gutterBottom color="textSecondary" sx={{ mb: 2.5 }}>
                   [02] CONFIGURATION
                 </Typography>
                 
-                <FormControl fullWidth size="small" sx={{ mb: 3 }}>
-                  <InputLabel>Application Presets</InputLabel>
-                  <Select
-                    value={preset}
-                    label="Application Presets"
-                    onChange={(e) => applyPreset(e.target.value as keyof typeof PRESETS)}
-                  >
-                    {Object.entries(PRESETS).map(([key, p]) => (
-                      <MenuItem key={key} value={key}>
-                        <Box>
-                          <Typography variant="body2" fontWeight="bold">{key}</Typography>
-                          <Typography variant="caption" color="textSecondary">{p.label}</Typography>
-                        </Box>
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <TextField
-                      fullWidth
-                      label="FPS"
-                      type="number"
-                      value={fps}
-                      onChange={(e) => setFps(Number(e.target.value))}
-                      size="small"
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <TextField
-                      fullWidth
-                      label="Qscale (1-31)"
-                      type="number"
-                      value={qscale}
-                      onChange={(e) => setQscale(Number(e.target.value))}
-                      size="small"
-                    />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>Scale Guide</InputLabel>
-                      <Select
-                        value={scaleOption}
-                        label="Scale Guide"
-                        onChange={(e) => handleScaleChange(e.target.value)}
-                      >
-                        <MenuItem value="original">Original Ratio (-1:-1)</MenuItem>
-                        <MenuItem value="1080p">Force 1080p (1920:1080)</MenuItem>
-                        <MenuItem value="720p">Force 720p (1280:720)</MenuItem>
-                        <MenuItem value="half">Half Size (Auto Scale)</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={12}>
-                    <TextField
-                      fullWidth
-                      label="Custom Scale (w:h)"
-                      value={scale}
-                      onChange={(e) => setScale(e.target.value)}
-                      size="small"
-                    />
-                  </Grid>
-                </Grid>
-
-                <Box sx={{ mt: 3 }}>
-                  <Typography variant="subtitle2" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
-                    Blur Threshold: {threshold}
-                    <Tooltip title="Laplacian Variance. Higher = Stricter.">
-                      <InfoIcon sx={{ ml: 1, fontSize: 16, color: 'text.secondary' }} />
-                    </Tooltip>
+                <Box sx={{ mb: 4 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1.5, color: '#8C8273' }}>
+                    --- PRESET_SELECTION ---
                   </Typography>
-                  <Slider
-                    value={threshold}
-                    onChange={(_, v) => setThreshold(v as number)}
-                    min={0}
-                    max={500}
-                    step={5}
-                    color="primary"
-                  />
-                  <Typography variant="caption" color="primary" fontWeight="bold">
-                    Guide: {getThresholdGuide(threshold)}
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Application Presets</InputLabel>
+                    <Select
+                      value={preset}
+                      label="Application Presets"
+                      onChange={(e) => applyPreset(e.target.value as keyof typeof PRESETS)}
+                    >
+                      {Object.entries(PRESETS).map(([key, p]) => (
+                        <MenuItem key={key} value={key}>
+                          <Box>
+                            <Typography variant="body2" fontWeight="bold">{key}</Typography>
+                            <Typography variant="caption" color="textSecondary">{p.label}</Typography>
+                          </Box>
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+
+                <Box sx={{ mb: 4 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1.5, color: '#8C8273' }}>
+                    --- EXTRACTION_PARAMS ---
                   </Typography>
+                  <Grid container spacing={2}>
+                    <Grid item xs={6}>
+                      <TextField
+                        fullWidth
+                        label="Target FPS"
+                        type="number"
+                        value={fps}
+                        onChange={(e) => setFps(Number(e.target.value))}
+                        size="small"
+                        helperText="Frames per sec"
+                      />
+                    </Grid>
+                    <Grid item xs={6}>
+                      <TextField
+                        fullWidth
+                        label="JPEG Quality"
+                        type="number"
+                        value={qscale}
+                        onChange={(e) => setQscale(Number(e.target.value))}
+                        size="small"
+                        helperText="1(best)-31"
+                      />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <FormControl fullWidth size="small">
+                        <InputLabel>Scale Guide</InputLabel>
+                        <Select
+                          value={scaleOption}
+                          label="Scale Guide"
+                          onChange={(e) => handleScaleChange(e.target.value)}
+                        >
+                          <MenuItem value="original">Original Ratio (-1:-1)</MenuItem>
+                          <MenuItem value="1080p">Force 1080p (1920:1080)</MenuItem>
+                          <MenuItem value="720p">Force 720p (1280:720)</MenuItem>
+                          <MenuItem value="half">Half Size (Auto Scale)</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Grid>
+                  </Grid>
+                </Box>
+
+                <Box>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1.5, color: '#8C8273' }}>
+                    --- BLUR_ANALYSIS_PARAMS ---
+                  </Typography>
+                  <Box sx={{ px: 1 }}>
+                    <Typography variant="subtitle2" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
+                      Threshold: {threshold}
+                      <Tooltip title="Laplacian Variance. Higher = Stricter.">
+                        <InfoIcon sx={{ ml: 1, fontSize: 16, color: 'text.secondary' }} />
+                      </Tooltip>
+                    </Typography>
+                    <Slider
+                      value={threshold}
+                      onChange={(_, v) => setThreshold(v as number)}
+                      min={0}
+                      max={500}
+                      step={5}
+                      color="primary"
+                    />
+                    <Typography variant="caption" color="primary" sx={{ fontWeight: 'bold', bgcolor: '#F4F1EA', px: 1, py: 0.5, borderRadius: 0.5 }}>
+                      GUIDE: {getThresholdGuide(threshold)}
+                    </Typography>
+                  </Box>
                 </Box>
 
                 <Button
