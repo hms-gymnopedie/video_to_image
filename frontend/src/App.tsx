@@ -232,7 +232,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.2" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -241,7 +241,7 @@ function App() {
         <Container maxWidth="xl">
           <Grid container spacing={3}>
             {/* Sidebar: Upload & Config */}
-            <Grid item={true} xs={12} md={4}>
+            <Grid item xs={12} md={4}>
               <Paper sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary" sx={{ mb: 2 }}>
                   [01] INPUT_SOURCE
@@ -273,14 +273,14 @@ function App() {
                     </Typography>
                     <Divider sx={{ mb: 1 }} />
                     <Grid container spacing={1}>
-                      <Grid item={true} xs={6}><Typography variant="caption" color="textSecondary">FILE_NAME:</Typography></Grid>
-                      <Grid item={true} xs={6}><Typography variant="caption" noWrap>{file.name}</Typography></Grid>
+                      <Grid item xs={6}><Typography variant="caption" color="textSecondary">FILE_NAME:</Typography></Grid>
+                      <Grid item xs={6}><Typography variant="caption" noWrap>{file.name}</Typography></Grid>
                       
-                      <Grid item={true} xs={6}><Typography variant="caption" color="textSecondary">FILE_SIZE:</Typography></Grid>
-                      <Grid item={true} xs={6}><Typography variant="caption">{(file.size / (1024 * 1024)).toFixed(2)} MB</Typography></Grid>
+                      <Grid item xs={6}><Typography variant="caption" color="textSecondary">FILE_SIZE:</Typography></Grid>
+                      <Grid item xs={6}><Typography variant="caption">{(file.size / (1024 * 1024)).toFixed(2)} MB</Typography></Grid>
                       
                       {loading && (
-                        <Grid item={true} xs={12} sx={{ textAlign: 'center', py: 1 }}>
+                        <Grid item xs={12} sx={{ textAlign: 'center', py: 1 }}>
                           <CircularProgress size={16} sx={{ mr: 1 }} />
                           <Typography variant="caption">ANALYZING_METADATA...</Typography>
                         </Grid>
@@ -288,17 +288,17 @@ function App() {
                       
                       {metadata && !loading && (
                         <>
-                          <Grid item={true} xs={6}><Typography variant="caption" color="textSecondary">RESOLUTION:</Typography></Grid>
-                          <Grid item={true} xs={6}><Typography variant="caption">{metadata.width} x {metadata.height}</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">RESOLUTION:</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption">{metadata.width} x {metadata.height}</Typography></Grid>
                           
-                          <Grid item={true} xs={6}><Typography variant="caption" color="textSecondary">VIDEO_FPS:</Typography></Grid>
-                          <Grid item={true} xs={6}><Typography variant="caption">{metadata.avg_frame_rate}</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">VIDEO_FPS:</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption">{metadata.avg_frame_rate}</Typography></Grid>
                           
-                          <Grid item={true} xs={6}><Typography variant="caption" color="textSecondary">LENGTH:</Typography></Grid>
-                          <Grid item={true} xs={6}><Typography variant="caption">{metadata.duration.toFixed(2)}s</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">LENGTH:</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption">{metadata.duration.toFixed(2)}s</Typography></Grid>
                           
-                          <Grid item={true} xs={6}><Typography variant="caption" color="textSecondary">ASPECT_RATIO:</Typography></Grid>
-                          <Grid item={true} xs={6}><Typography variant="caption">{(metadata.width / metadata.height).toFixed(2)}:1</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption" color="textSecondary">ASPECT_RATIO:</Typography></Grid>
+                          <Grid item xs={6}><Typography variant="caption">{(metadata.width / metadata.height).toFixed(2)}:1</Typography></Grid>
                         </>
                       )}
                     </Grid>
@@ -330,7 +330,7 @@ function App() {
                 </FormControl>
 
                 <Grid container spacing={2}>
-                  <Grid item={true} xs={6}>
+                  <Grid item xs={6}>
                     <TextField
                       fullWidth
                       label="FPS"
@@ -340,7 +340,7 @@ function App() {
                       size="small"
                     />
                   </Grid>
-                  <Grid item={true} xs={6}>
+                  <Grid item xs={6}>
                     <TextField
                       fullWidth
                       label="Qscale (1-31)"
@@ -350,7 +350,7 @@ function App() {
                       size="small"
                     />
                   </Grid>
-                  <Grid item={true} xs={12}>
+                  <Grid item xs={12}>
                     <FormControl fullWidth size="small">
                       <InputLabel>Scale Guide</InputLabel>
                       <Select
@@ -365,7 +365,7 @@ function App() {
                       </Select>
                     </FormControl>
                   </Grid>
-                  <Grid item={true} xs={12}>
+                  <Grid item xs={12}>
                     <TextField
                       fullWidth
                       label="Custom Scale (w:h)"
@@ -410,7 +410,7 @@ function App() {
             </Grid>
 
             {/* Main Area: Results */}
-            <Grid item={true} xs={12} md={8}>
+            <Grid item xs={12} md={8}>
               <Paper sx={{ p: 3, minHeight: '80vh', borderLeft: '4px solid #4A4238' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary" sx={{ mb: 3 }}>
                   [03] OUTPUT_BUFFER
@@ -448,7 +448,7 @@ function App() {
                     </Box>
                     <Grid container spacing={2}>
                       {results.map((res, index) => (
-                        <Grid item={true} xs={12} sm={6} md={4} lg={3} key={index}>
+                        <Grid item xs={12} sm={6} md={4} lg={3} key={index}>
                           <Card sx={{ 
                             borderRadius: 0, 
                             border: '1px solid #E6E1D6',

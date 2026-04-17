@@ -12,22 +12,29 @@ import ffmpeg
 
 app = FastAPI()
 
-# Explicitly allow the frontend origin and common methods/headers
+# Ultra-permissive CORS for debugging
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_requests(request, call_next):
+    print(f"DEBUG: {request.method} {request.url}")
+    response = await call_next(request)
+    print(f"DEBUG: Response Status: {response.status_code}")
+    return response
+
 @app.get("/")
 async def root():
-    return {"message": "Video to Image API is running", "version": "1.3"}
+    return {"message": "Video to Image API is running", "version": "1.3.2"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.3"}
+    return {"status": "ok", "version": "1.3.2"}
 
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "output"
