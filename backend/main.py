@@ -41,19 +41,19 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"message": "Video to Image API is running", "version": "1.3.5"}
+    return {"message": "Video to Image API is running", "version": "1.3.6"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.3.5"}
+    return {"status": "ok", "version": "1.3.6"}
 
 UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "output"
+DEFAULT_OUTPUT_DIR = "output"
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
 
-app.mount("/images", StaticFiles(directory=OUTPUT_DIR), name="images")
+app.mount("/images", StaticFiles(directory=DEFAULT_OUTPUT_DIR), name="images")
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
@@ -109,7 +109,8 @@ async def process_video(
     scale: str = Form("-1:-1"),
     qscale: int = Form(2),
     naming_rule: str = Form("frame_%04d.jpg"),
-    threshold: float = Form(100.0)
+    threshold: float = Form(100.0),
+    output_path: Optional[str] = Form(None)
 ):
     video_path = None
     for f in os.listdir(UPLOAD_DIR):
@@ -120,17 +121,18 @@ async def process_video(
     if not video_path:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    request_output_dir = os.path.join(OUTPUT_DIR, file_id)
-    os.makedirs(request_output_dir, exist_ok=True)
+    # Use custom path if provided, else use default internal output dir
+    if output_path and output_path.strip():
+        final_output_dir = os.path.abspath(output_path.strip())
+    else:
+        final_output_dir = os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
 
-    output_pattern = os.path.join(request_output_dir, naming_rule)
+    os.makedirs(final_output_dir, exist_ok=True)
+    output_pattern = os.path.join(final_output_dir, naming_rule)
     
     try:
-        # Improved FFmpeg command execution
         stream = ffmpeg.input(video_path)
         stream = ffmpeg.filter(stream, 'fps', fps=fps)
-        
-        # Handle scale filter properly
         if scale != "-1:-1":
             w, h = scale.split(':')
             stream = ffmpeg.filter(stream, 'scale', w=w, h=h)
@@ -139,27 +141,29 @@ async def process_video(
         ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
     except ffmpeg.Error as e:
         stderr = e.stderr.decode() if e.stderr else "Unknown FFmpeg error"
-        print(f"FFmpeg Error: {stderr}")
         raise HTTPException(status_code=500, detail=f"FFmpeg process failed: {stderr}")
 
     results = []
-    for filename in sorted(os.listdir(request_output_dir)):
+    for filename in sorted(os.listdir(final_output_dir)):
         if filename.lower().endswith((".jpg", ".jpeg", ".png")):
-            img_path = os.path.join(request_output_dir, filename)
+            img_path = os.path.join(final_output_dir, filename)
             image = cv2.imread(img_path)
             if image is None: continue
                 
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             variance = cv2.Laplacian(gray, cv2.CV_64F).var()
             
+            # For result display, we still need a URL. 
+            # If it's a custom path outside of DEFAULT_OUTPUT_DIR, we handle it as a relative link for now.
             results.append({
                 "filename": filename,
-                "url": f"/images/{file_id}/{filename}",
+                "url": f"/images/{file_id}/{filename}" if not output_path else f"/images/{filename}", # Simplification for preview
                 "score": round(variance, 2),
-                "is_blurry": variance < threshold
+                "is_blurry": variance < threshold,
+                "full_path": img_path
             })
 
-    return {"results": results}
+    return {"results": results, "output_dir": final_output_dir}
 
 if __name__ == "__main__":
     import uvicorn

@@ -131,6 +131,7 @@ function App() {
   const [qscale, setQscale] = useState(2);
   const [namingRule, setNamingRule] = useState('frame_%04d.jpg');
   const [threshold, setThreshold] = useState(100);
+  const [outputPath, setOutputPath] = useState('');
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -206,6 +207,7 @@ function App() {
     formData.append('qscale', qscale.toString());
     formData.append('naming_rule', namingRule);
     formData.append('threshold', threshold.toString());
+    formData.append('output_path', outputPath);
 
     try {
       const res = await axios.post(`${API_BASE_URL}/process/${fileId}`, formData);
@@ -233,7 +235,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.5" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.6" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -377,6 +379,26 @@ function App() {
                           <MenuItem value="half">Half Size (Auto Scale)</MenuItem>
                         </Select>
                       </FormControl>
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        fullWidth
+                        label="Output Directory (Optional)"
+                        placeholder="e.g., /Users/name/Desktop/frames"
+                        value={outputPath}
+                        onChange={(e) => setOutputPath(e.target.value)}
+                        size="small"
+                        helperText="Full system path. Leave empty to use internal output folder."
+                      />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        fullWidth
+                        label="Custom Scale (w:h)"
+                        value={scale}
+                        onChange={(e) => setScale(e.target.value)}
+                        size="small"
+                      />
                     </Grid>
                   </Grid>
                 </Box>
