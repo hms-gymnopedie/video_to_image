@@ -44,7 +44,7 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.5.1"}
+    return {"status": "ok", "version": "1.5.2"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -159,7 +159,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
                 return False
 
         # Start monitoring in a loop while FFmpeg runs
-        ffmpeg_task = asyncio.to_thread(run_ffmpeg)
+        ffmpeg_task = asyncio.create_task(asyncio.to_thread(run_ffmpeg))
         
         while not ffmpeg_task.done():
             files = [f for f in os.listdir(final_output_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
