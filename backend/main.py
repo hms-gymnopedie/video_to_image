@@ -4,15 +4,17 @@ import uuid
 import subprocess
 import cv2
 import json
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import traceback
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from typing import List, Optional
 import ffmpeg
 
 app = FastAPI()
 
-# Ultra-permissive CORS for debugging
+# Ultra-permissive CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,19 +24,28 @@ app.add_middleware(
 )
 
 @app.middleware("http")
-async def log_requests(request, call_next):
+async def log_requests(request: Request, call_next):
     print(f"DEBUG: {request.method} {request.url}")
-    response = await call_next(request)
-    print(f"DEBUG: Response Status: {response.status_code}")
-    return response
+    try:
+        response = await call_next(request)
+        print(f"DEBUG: Response Status: {response.status_code}")
+        return response
+    except Exception as e:
+        print(f"DEBUG: SERVER_ERROR: {str(e)}")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e), "trace": traceback.format_exc()},
+            headers={"Access-Control-Allow-Origin": "*"}
+        )
 
 @app.get("/")
 async def root():
-    return {"message": "Video to Image API is running", "version": "1.3.3"}
+    return {"message": "Video to Image API is running", "version": "1.3.5"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "1.3.3"}
+    return {"status": "ok", "version": "1.3.5"}
 
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "output"
@@ -42,7 +53,6 @@ OUTPUT_DIR = "output"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Serve output images statically
 app.mount("/images", StaticFiles(directory=OUTPUT_DIR), name="images")
 
 @app.post("/upload")
@@ -68,15 +78,13 @@ async def get_metadata(file_id: str):
         raise HTTPException(status_code=404, detail="Video not found")
     
     try:
-        # Use ffprobe to get detailed stream information
         probe = ffmpeg.probe(video_path)
         video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
         format_info = probe.get('format', {})
 
         if not video_stream:
-            raise HTTPException(status_code=400, detail="No video stream found in file")
+            raise HTTPException(status_code=400, detail="No video stream found")
 
-        # Calculate FPS accurately
         fps_raw = video_stream.get('avg_frame_rate', '0/0')
         if '/' in fps_raw:
             num, den = map(int, fps_raw.split('/'))
@@ -89,12 +97,10 @@ async def get_metadata(file_id: str):
             "width": int(video_stream.get('width', 0)),
             "height": int(video_stream.get('height', 0)),
             "avg_frame_rate": f"{fps} FPS",
-            "bitrate": format_info.get('bit_rate'),
-            "codec": video_stream.get('codec_name')
         }
     except Exception as e:
         print(f"Metadata error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"FFprobe error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/process/{file_id}")
 async def process_video(
@@ -114,33 +120,34 @@ async def process_video(
     if not video_path:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Create a specific output folder for this request
     request_output_dir = os.path.join(OUTPUT_DIR, file_id)
     os.makedirs(request_output_dir, exist_ok=True)
 
-    # 1. FFmpeg Extraction
     output_pattern = os.path.join(request_output_dir, naming_rule)
+    
     try:
-        (
-            ffmpeg
-            .input(video_path)
-            .filter('fps', fps=fps)
-            .filter('scale', w=scale.split(':')[0], h=scale.split(':')[1])
-            .output(output_pattern, qscale=qscale)
-            .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
-        )
+        # Improved FFmpeg command execution
+        stream = ffmpeg.input(video_path)
+        stream = ffmpeg.filter(stream, 'fps', fps=fps)
+        
+        # Handle scale filter properly
+        if scale != "-1:-1":
+            w, h = scale.split(':')
+            stream = ffmpeg.filter(stream, 'scale', w=w, h=h)
+            
+        stream = ffmpeg.output(stream, output_pattern, qscale=qscale)
+        ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
     except ffmpeg.Error as e:
-        raise HTTPException(status_code=500, detail=f"FFmpeg error: {e.stderr.decode()}")
+        stderr = e.stderr.decode() if e.stderr else "Unknown FFmpeg error"
+        print(f"FFmpeg Error: {stderr}")
+        raise HTTPException(status_code=500, detail=f"FFmpeg process failed: {stderr}")
 
-    # 2. OpenCV Blur Detection (Laplacian Variance)
     results = []
     for filename in sorted(os.listdir(request_output_dir)):
-        if filename.endswith((".jpg", ".jpeg", ".png")):
+        if filename.lower().endswith((".jpg", ".jpeg", ".png")):
             img_path = os.path.join(request_output_dir, filename)
             image = cv2.imread(img_path)
-            if image is None:
-                continue
+            if image is None: continue
                 
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             variance = cv2.Laplacian(gray, cv2.CV_64F).var()

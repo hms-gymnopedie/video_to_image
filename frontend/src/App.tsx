@@ -211,8 +211,9 @@ function App() {
       const res = await axios.post(`${API_BASE_URL}/process/${fileId}`, formData);
       setResults(res.data.results);
     } catch (err: any) {
-      setError('Processing failed. Check if FFmpeg is working correctly.');
-      console.error(err);
+      const msg = err.response?.data?.detail || err.message || 'Processing failed.';
+      setError(`PROCESS_ERROR: ${msg}`);
+      console.error("Processing Error:", err);
     } finally {
       setProcessing(false);
     }
@@ -232,7 +233,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.4" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.5" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
