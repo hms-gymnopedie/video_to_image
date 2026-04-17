@@ -29,23 +29,17 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    if request.url.path.startswith("/ws"):
-        return await call_next(request)
+    if request.url.path.startswith("/ws"): return await call_next(request)
     print(f"DEBUG: {request.method} {request.url}")
     try:
         response = await call_next(request)
         return response
     except Exception as e:
         print(f"DEBUG: SERVER_ERROR: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": str(e), "trace": traceback.format_exc()},
-            headers={"Access-Control-Allow-Origin": "*"}
-        )
+        return JSONResponse(status_code=500, content={"detail": str(e), "trace": traceback.format_exc()}, headers={"Access-Control-Allow-Origin": "*"})
 
 @app.get("/health")
-async def health_check():
-    return {"status": "ok", "version": "1.8.0"}
+async def health_check(): return {"status": "ok", "version": "1.9.0"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -77,16 +71,14 @@ async def create_directory(data: CreateDirRequest):
     try:
         os.makedirs(new_path, exist_ok=True)
         return {"status": "success", "path": new_path}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
     file_id = str(uuid.uuid4())
     file_extension = os.path.splitext(file.filename)[1]
     video_path = os.path.join(UPLOAD_DIR, f"{file_id}{file_extension}")
-    with open(video_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    with open(video_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
     return {"file_id": file_id, "filename": file.filename}
 
 @app.get("/metadata/{file_id}")
@@ -130,7 +122,6 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             if f.startswith(file_id):
                 video_path = os.path.join(UPLOAD_DIR, f)
                 break
-        
         if not video_path:
             await websocket.send_json({"type": "error", "message": "Video not found"})
             return
@@ -138,21 +129,20 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         base_output_dir = os.path.abspath(output_path.strip()) if output_path and output_path.strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
         os.makedirs(base_output_dir, exist_ok=True)
         
-        # CLEAR SUBDIRECTORIES FOR FRESH START
+        # Subdirectories
         sharp_dir = os.path.join(base_output_dir, "sharp")
         blur_dir = os.path.join(base_output_dir, "blur")
         
-        if os.path.exists(sharp_dir): shutil.rmtree(sharp_dir)
-        if os.path.exists(blur_dir): shutil.rmtree(blur_dir)
-        
-        os.makedirs(sharp_dir, exist_ok=True)
-        os.makedirs(blur_dir, exist_ok=True)
+        # Clean and create
+        for d in [sharp_dir, blur_dir]:
+            if os.path.exists(d): shutil.rmtree(d)
+            os.makedirs(d, exist_ok=True)
 
-        await websocket.send_json({"type": "status", "message": "STARTING_FFMPEG"})
-        
-        # Temp folder strictly for raw extraction
+        # Extraction phase
         temp_extract_dir = os.path.join(base_output_dir, f"temp_{uuid.uuid4().hex}")
         os.makedirs(temp_extract_dir, exist_ok=True)
+        
+        await websocket.send_json({"type": "status", "message": "1/3 EXTRACTING_FRAMES"})
         
         stream = ffmpeg.input(video_path)
         stream = ffmpeg.filter(stream, 'fps', fps=fps)
@@ -166,9 +156,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         
         def run_ffmpeg_sync():
             try:
-                (ffmpeg.output(stream, output_pattern, qscale=qscale)
-                 .overwrite_output()
-                 .run(capture_stdout=True, capture_stderr=True))
+                (ffmpeg.output(stream, output_pattern, qscale=qscale).overwrite_output().run(capture_stdout=True, capture_stderr=True))
                 return True
             except ffmpeg.Error as e:
                 print(f"FFmpeg Error: {e.stderr.decode() if e.stderr else str(e)}")
@@ -178,11 +166,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             while True:
                 try:
                     files = [f for f in os.listdir(temp_extract_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
-                    await websocket.send_json({
-                        "type": "progress",
-                        "current": int(len(files)),
-                        "message": f"EXTRACTING: {len(files)} frames"
-                    })
+                    await websocket.send_json({"type": "progress", "current": len(files), "message": f"EXTRACTING: {len(files)} generated"})
                 except: break
                 await asyncio.sleep(1.0)
 
@@ -191,14 +175,18 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         monitor_task.cancel()
 
         if not success:
-            await websocket.send_json({"type": "error", "message": "FFmpeg execution failed"})
+            await websocket.send_json({"type": "error", "message": "FFmpeg failed"})
             return
 
-        await websocket.send_json({"type": "status", "message": "CLASSIFYING_AND_MOVING_FILES"})
+        # ANALYSIS AND MOVE PHASE
+        await websocket.send_json({"type": "status", "message": "2/3 ANALYZING_AND_SORTING"})
+        
+        # Give OS a moment to finish file writing
+        time.sleep(1.0)
         
         results = []
-        is_internal = base_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
         raw_files = sorted([f for f in os.listdir(temp_extract_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+        is_internal = base_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
         
         all_scores = []
         sharp_scores = []
@@ -209,45 +197,25 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             if image is None: continue
             
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+            variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            if math.isnan(variance) or math.isinf(variance): variance = 0.0
             
-            score_val = float(variance)
-            if math.isnan(score_val) or math.isinf(score_val): score_val = 0.0
+            is_blurry_val = bool(variance < threshold)
+            all_scores.append(variance)
             
-            is_blurry_val = bool(score_val < threshold)
-            all_scores.append(score_val)
+            target_dir = blur_dir if is_blurry_val else sharp_dir
+            if not is_blurry_val: sharp_scores.append(variance)
             
-            if not is_blurry_val:
-                sharp_scores.append(score_val)
-                target_dir = sharp_dir
-            else:
-                target_dir = blur_dir
-            
-            # PHYSICAL MOVE
             dst_path = os.path.join(target_dir, filename)
-            shutil.move(src_path, dst_path)
+            shutil.move(src_path, dst_path) # PHYSICALLY MOVE FILE
             
-            preview_url = None
-            if is_internal:
-                rel_path = os.path.relpath(dst_path, os.path.abspath(DEFAULT_OUTPUT_DIR))
-                preview_url = f"/images/{rel_path}"
-            
-            results.append({
-                "filename": str(filename),
-                "url": preview_url,
-                "score": float(round(score_val, 2)),
-                "is_blurry": is_blurry_val
-            })
+            preview_url = f"/images/{os.path.relpath(dst_path, os.path.abspath(DEFAULT_OUTPUT_DIR))}" if is_internal else None
+            results.append({"filename": str(filename), "url": preview_url, "score": round(variance, 2), "is_blurry": is_blurry_val})
             
             if i % 10 == 0 or i == len(raw_files) - 1:
-                await websocket.send_json({
-                    "type": "progress",
-                    "current": int(i + 1),
-                    "total": int(len(raw_files)),
-                    "message": f"MOVING_TO_FOLDERS: {i+1}/{len(raw_files)}"
-                })
-        
-        # Cleanup temp extraction folder
+                await websocket.send_json({"type": "progress", "current": i + 1, "total": len(raw_files), "message": f"SORTING: {i+1}/{len(raw_files)}"})
+
+        # Final cleanup
         try: shutil.rmtree(temp_extract_dir)
         except: pass
 
@@ -267,8 +235,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             }
         })
 
-    except WebSocketDisconnect:
-        print("WebSocket disconnected")
+    except WebSocketDisconnect: print("WebSocket disconnected")
     except Exception as e:
         print(f"WS Error: {str(e)}")
         traceback.print_exc()

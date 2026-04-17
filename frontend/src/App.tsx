@@ -224,15 +224,15 @@ function App() {
   const sharpCount = results.filter(r => !r.is_blurry).length;
   const blurCount = results.length - sharpCount;
 
-  // Updated Chart Data with more descriptive names
-  const countData = [
-    { label: 'Sharp', count: sharpCount, color: '#6B7A5F' },
-    { label: 'Blur', count: blurCount, color: '#A65D57' }
+  // Finalized Chart Data
+  const countChartData = [
+    { label: 'Sharp', val: sharpCount, color: '#6B7A5F' },
+    { label: 'Blur', val: blurCount, color: '#A65D57' }
   ];
 
-  const scoreData = analytics ? [
-    { label: 'AllAvg', score: analytics.avg_all, color: '#D4CBB3' },
-    { label: 'SharpAvg', score: analytics.avg_sharp, color: '#6B7A5F' }
+  const scoreChartData = analytics ? [
+    { label: 'AllAvg', val: analytics.avg_all, color: '#D4CBB3' },
+    { label: 'SharpAvg', val: analytics.avg_sharp, color: '#6B7A5F' }
   ] : [];
 
   const renderTree = (node: DirectoryNode) => (
@@ -252,7 +252,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.8.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.9.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -260,7 +260,6 @@ function App() {
 
         <Container maxWidth="xl">
           <Grid container spacing={3}>
-            {/* Sidebar */}
             <Grid item xs={12} md={4}>
               <Paper sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary">[01] INPUT_SOURCE</Typography>
@@ -324,37 +323,34 @@ function App() {
               </Paper>
             </Grid>
 
-            {/* Main Area */}
             <Grid item xs={12} md={8}>
               <Paper sx={{ p: 3, minHeight: '85vh', borderLeft: '4px solid #4A4238' }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
-                  <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER & VISUAL_ANALYTICS</Typography>
-                  {results.length > 0 && (
+                  <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER & ANALYTICS</Typography>
+                  {analytics && (
                     <Box sx={{ display: 'flex', gap: 2 }}>
-                      {/* Count Chart */}
-                      <Box sx={{ width: 180, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>COUNT_DISTRIBUTION</Typography>
-                        <ResponsiveContainer width="100%" height="80%">
-                          <BarChart data={countData} layout="vertical" margin={{ left: -20, right: 30 }}>
-                            <XAxis type="number" hide />
+                      <Box sx={{ width: 200, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, fontSize: '9px' }}>COUNT_RATIO</Typography>
+                        <ResponsiveContainer width="100%" height={80}>
+                          <BarChart data={countChartData} layout="vertical" margin={{ left: -30, right: 40 }}>
+                            <XAxis type="number" hide domain={[0, 'dataMax + 10']} />
                             <YAxis type="category" dataKey="label" hide />
-                            <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-                              {countData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                              <LabelList dataKey="count" position="right" fontSize={10} fill="#4A4238" />
+                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={20}>
+                              {countChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                              <LabelList dataKey="val" position="right" fontSize={10} fill="#4A4238" />
                             </Bar>
                           </BarChart>
                         </ResponsiveContainer>
                       </Box>
-                      {/* Score Chart */}
-                      <Box sx={{ width: 180, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>AVG_BLUR_QUALITY</Typography>
-                        <ResponsiveContainer width="100%" height="80%">
-                          <BarChart data={scoreData} layout="vertical" margin={{ left: -20, right: 30 }}>
-                            <XAxis type="number" hide />
+                      <Box sx={{ width: 200, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, fontSize: '9px' }}>QUALITY_SCORE (AVG)</Typography>
+                        <ResponsiveContainer width="100%" height={80}>
+                          <BarChart data={scoreChartData} layout="vertical" margin={{ left: -30, right: 40 }}>
+                            <XAxis type="number" hide domain={[0, 'dataMax + 10']} />
                             <YAxis type="category" dataKey="label" hide />
-                            <Bar dataKey="score" radius={[0, 4, 4, 0]}>
-                              {scoreData.map((entry, index) => <Cell key={`cell-s-${index}`} fill={entry.color} />)}
-                              <LabelList dataKey="score" position="right" fontSize={10} fill="#4A4238" />
+                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={20}>
+                              {scoreChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                              <LabelList dataKey="val" position="right" fontSize={10} fill="#4A4238" />
                             </Bar>
                           </BarChart>
                         </ResponsiveContainer>

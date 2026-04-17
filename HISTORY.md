@@ -1,7 +1,7 @@
 # Project Update History
 
-## [2026-04-16] Update V1.8.0
-- **Fixed:** Ensured strict physical separation of output files. Images are now extracted to a temp folder and then moved to `sharp/` or `blur/` subdirectories.
-- **Improved:** Robust file moving logic with real-time status updates for the moving process.
-- **Improved:** UI/UX for classification feedback; clear visibility of where files are being stored.
-- **Updated:** Versioning to V1.8.0.
+## [2026-04-16] Update V1.9.0
+- **Fixed:** Robust physical file separation. Implemented a 3-stage pipeline: Extraction -> Global Sync -> Analysis/Sorting.
+- **Added:** Quality Metrics Analytics. Added a bar chart comparing the average blur score of all frames vs. sharp-filtered frames.
+- **Improved:** Stability of Recharts rendering by ensuring proper container heights and data mapping.
+- **Updated:** Versioning to V1.9.0.
