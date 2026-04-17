@@ -275,7 +275,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.7" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.8" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -284,7 +284,7 @@ function App() {
         <Container maxWidth="xl">
           <Grid container spacing={3}>
             {/* Sidebar */}
-            <Grid item xs={12} md={4}>
+            <Grid xs={12} md={4}>
               <Paper sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary" sx={{ mb: 2 }}>
                   [01] INPUT_SOURCE
@@ -331,17 +331,26 @@ function App() {
                     --- OUTPUT_DIRECTORY_BROWSER ---
                     <IconButton size="small" onClick={fetchDirectories} sx={{ ml: 1 }}><RefreshIcon sx={{ fontSize: 14 }} /></IconButton>
                   </Typography>
-                  <Box sx={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
-                    {directories && (
+                    <Box sx={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
+                    {directories ? (
                       <SimpleTreeView
                         onSelectedItemsChange={(_, itemId) => setOutputPath(itemId as string)}
                         selectedItems={outputPath}
                       >
                         {renderTree(directories)}
                       </SimpleTreeView>
+                    ) : (
+                      <Box sx={{ textAlign: 'center', py: 2 }}><CircularProgress size={20} /><Typography variant="caption" display="block">LOADING_DIRECTORIES...</Typography></Box>
                     )}
                   </Box>
-                  <TextField fullWidth label="Selected Path" value={outputPath} size="small" variant="filled" InputProps={{ readOnly: true }} />
+                  <TextField 
+                    fullWidth 
+                    label="Selected Path" 
+                    value={outputPath} 
+                    size="small" 
+                    variant="filled" 
+                    slotProps={{ input: { readOnly: true } }} 
+                  />
                 </Box>
 
                 <Box sx={{ mb: 4 }}>
@@ -362,9 +371,9 @@ function App() {
                     --- EXTRACTION_PARAMS ---
                   </Typography>
                   <Grid container spacing={2}>
-                    <Grid item xs={6}><TextField fullWidth label="Target FPS" type="number" value={fps} onChange={(e) => setFps(Number(e.target.value))} size="small" helperText="Frames per sec" /></Grid>
-                    <Grid item xs={6}><TextField fullWidth label="JPEG Quality" type="number" value={qscale} onChange={(e) => setQscale(Number(e.target.value))} size="small" helperText="1(best)-31" /></Grid>
-                    <Grid item xs={12}>
+                    <Grid xs={6}><TextField fullWidth label="Target FPS" type="number" value={fps} onChange={(e) => setFps(Number(e.target.value))} size="small" helperText="Frames per sec" /></Grid>
+                    <Grid xs={6}><TextField fullWidth label="JPEG Quality" type="number" value={qscale} onChange={(e) => setQscale(Number(e.target.value))} size="small" helperText="1(best)-31" /></Grid>
+                    <Grid xs={12}>
                       <FormControl fullWidth size="small"><InputLabel>Scale Guide</InputLabel>
                         <Select value={scaleOption} label="Scale Guide" onChange={(e) => handleScaleChange(e.target.value)}>
                           <MenuItem value="original">Original Ratio (-1:-1)</MenuItem>
@@ -374,7 +383,7 @@ function App() {
                         </Select>
                       </FormControl>
                     </Grid>
-                    <Grid item xs={12}><TextField fullWidth label="Custom Scale (w:h)" value={scale} onChange={(e) => setScale(e.target.value)} size="small" /></Grid>
+                    <Grid xs={12}><TextField fullWidth label="Custom Scale (w:h)" value={scale} onChange={(e) => setScale(e.target.value)} size="small" /></Grid>
                   </Grid>
                 </Box>
 
@@ -399,7 +408,7 @@ function App() {
             </Grid>
 
             {/* Main Area */}
-            <Grid item xs={12} md={8}>
+            <Grid xs={12} md={8}>
               <Paper sx={{ p: 3, minHeight: '80vh', borderLeft: '4px solid #4A4238' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary" sx={{ mb: 3 }}>
                   [03] OUTPUT_BUFFER
@@ -420,7 +429,7 @@ function App() {
                     </Box>
                     <Grid container spacing={2}>
                       {results.map((res, index) => (
-                        <Grid item xs={12} sm={6} md={4} lg={3} key={index}>
+                        <Grid xs={12} sm={6} md={4} lg={3} key={index}>
                           <Card sx={{ borderRadius: 0, border: '1px solid #E6E1D6', '&:hover': { borderColor: '#4A4238' } }}>
                             {res.url ? (
                               <CardMedia component="img" height="120" image={`${API_BASE_URL}${res.url}`} sx={{ filter: res.is_blurry ? 'grayscale(100%) opacity(0.4)' : 'none' }} />
