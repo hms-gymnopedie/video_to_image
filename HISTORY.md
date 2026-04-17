@@ -1,8 +1,7 @@
 # Project Update History
 
-## [2026-04-16] Update V1.3.9
-- **Fixed:** FFmpeg 500 error by adding detailed logging and improving process execution logic.
-- **Added:** Pre-processing vs. Post-processing comparison view.
-- **Added:** "ALL_FRAMES" and "SHARP_ONLY" filter tabs in the results gallery.
-- **Added:** Real-time statistics (Sharp count, Blur count, Percentage) for processing results.
-- **Updated:** Versioning to V1.3.9.
+## [2026-04-16] Update V1.4.0
+- **Fixed:** Critical UI crash by restoring the missing `handleCreateFolder` function.
+- **Added:** Pre vs Post processing comparison view with tabs (ALL vs SHARP ONLY).
+- **Added:** Real-time processing statistics (Sharpness percentage).
+- **Updated:** Versioning to V1.4.0.

@@ -44,7 +44,6 @@ import {
   Folder as FolderIcon,
   CreateNewFolder as CreateNewFolderIcon,
   Refresh as RefreshIcon,
-  Compare as CompareIcon,
 } from '@mui/icons-material';
 import { SimpleTreeView } from '@mui/x-tree-view/SimpleTreeView';
 import { TreeItem } from '@mui/x-tree-view/TreeItem';
@@ -119,8 +118,6 @@ function App() {
   const [newFolderName, setNewFolderName] = useState('');
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [targetParentPath, setTargetParentPath] = useState('');
-  
-  // Results Tab
   const [tabValue, setTabValue] = useState(0);
 
   const fetchDirectories = async () => {
@@ -177,6 +174,21 @@ function App() {
     else if (option === 'half') setScale(`${Math.round(metadata.width/2)}:${Math.round(metadata.height/2)}`);
   };
 
+  const handleCreateFolder = async () => {
+    if (!newFolderName) return;
+    try {
+      await axios.post(`${API_BASE_URL}/create-directory`, {
+        parent_path: targetParentPath,
+        new_name: newFolderName
+      });
+      setNewFolderName('');
+      setIsDialogOpen(false);
+      fetchDirectories();
+    } catch (err: any) {
+      alert(`Folder creation failed: ${err.message}`);
+    }
+  };
+
   const handleProcess = async () => {
     if (!fileId) return;
     setProcessing(true); setResults([]); setError(null);
@@ -222,7 +234,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.3.9" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.4.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -263,7 +275,6 @@ function App() {
 
               <Paper sx={{ p: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary" sx={{ mb: 2.5 }}>[02] CONFIGURATION</Typography>
-                
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- OUTPUT_BROWSER --- <IconButton size="small" onClick={fetchDirectories}><RefreshIcon sx={{ fontSize: 14 }} /></IconButton></Typography>
                   <Box sx={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
@@ -271,7 +282,6 @@ function App() {
                   </Box>
                   <TextField fullWidth label="Selected Path" value={outputPath} size="small" variant="filled" slotProps={{ input: { readOnly: true } }} />
                 </Box>
-
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- PRESETS ---</Typography>
                   <FormControl fullWidth size="small">
@@ -282,7 +292,6 @@ function App() {
                     </Select>
                   </FormControl>
                 </Box>
-
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- EXTRACTION ---</Typography>
                   <Grid container spacing={1}>
@@ -291,13 +300,10 @@ function App() {
                     <Grid item xs={12}><TextField fullWidth label="Custom Scale" value={scale} onChange={(e) => setScale(e.target.value)} size="small" /></Grid>
                   </Grid>
                 </Box>
-
                 <Box>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, color: '#8C8273' }}>--- BLUR_THRESHOLD: {threshold} ---</Typography>
                   <Slider value={threshold} onChange={(_, v) => setThreshold(v as number)} min={0} max={500} step={5} />
-                  <Typography variant="caption" sx={{ bgcolor: '#F4F1EA', p: 0.5, display: 'block' }}>GUIDE: {results.length > 0 ? "Adjust & Run Again" : "100 is standard"}</Typography>
                 </Box>
-
                 <Button fullWidth variant="contained" size="large" sx={{ mt: 3, py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'EXEC_PROCESSING'}
                 </Button>
@@ -316,16 +322,13 @@ function App() {
                     </Box>
                   )}
                 </Box>
-
                 {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
-
                 <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
                   <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} textColor="primary" indicatorColor="primary">
                     <Tab label={`ALL_FRAMES (${results.length})`} sx={{ fontSize: '12px' }} />
                     <Tab label={`SHARP_ONLY (${sharpCount})`} sx={{ fontSize: '12px' }} icon={<CheckCircleIcon sx={{ fontSize: '16px' }} />} iconPosition="start" />
                   </Tabs>
                 </Box>
-
                 {processing ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mt: 15 }}>
                     <CircularProgress size={40} thickness={2} sx={{ color: '#4A4238' }} />
