@@ -133,20 +133,15 @@ function App() {
   // Real-time Preview Logic
   const analyticsData = useMemo(() => {
     if (results.length === 0) return null;
-    
     const sharp = results.filter(r => r.score >= threshold);
     const blur = results.filter(r => r.score < threshold);
-    
     const avgAll = results.reduce((acc, curr) => acc + curr.score, 0) / results.length;
     const avgSharp = sharp.length > 0 ? sharp.reduce((acc, curr) => acc + curr.score, 0) / sharp.length : 0;
-    
     return {
       sharpCount: sharp.length,
       blurCount: blur.length,
       avgAll: parseFloat(avgAll.toFixed(2)),
-      avgSharp: parseFloat(avgSharp.toFixed(2)),
-      sharpList: sharp,
-      blurList: blur
+      avgSharp: parseFloat(avgSharp.toFixed(2))
     };
   }, [results, threshold]);
 
@@ -187,6 +182,30 @@ function App() {
     } catch (err: any) { setError(`CONNECTION_ERROR: ${err.message}`); } finally { setLoading(false); }
   };
 
+  useEffect(() => { if (metadata) setTotalEstimated(Math.ceil(metadata.duration * fps)); }, [fps, metadata]);
+
+  const applyPreset = (key: keyof typeof PRESETS) => {
+    const p = PRESETS[key];
+    setPreset(key); setFps(p.fps); setQscale(p.qscale); setThreshold(p.threshold);
+  };
+
+  const handleScaleChange = (option: string) => {
+    setScaleOption(option);
+    if (!metadata) return;
+    if (option === 'original') setScale('-1:-1');
+    else if (option === '1080p') setScale('1920:1080');
+    else if (option === '720p') setScale('1280:720');
+    else if (option === 'half') setScale(`${Math.round(metadata.width/2)}:${Math.round(metadata.height/2)}`);
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName) return;
+    try {
+      await axios.post(`${API_BASE_URL}/create-directory`, { parent_path: targetParentPath, new_name: newFolderName });
+      setNewFolderName(''); setIsDialogOpen(false); fetchDirectories();
+    } catch (err: any) { alert(`Folder creation failed: ${err.message}`); }
+  };
+
   const handleProcess = () => {
     if (!fileId) return;
     setProcessing(true); setResults([]); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
@@ -220,10 +239,8 @@ function App() {
         results: results
       });
       fetchDirectories();
-      alert('Physical folders synchronized based on new threshold!');
-    } catch (err: any) {
-      setError(`SYNC_ERROR: ${err.message}`);
-    } finally { setSyncing(false); }
+      alert('Physical folders synchronized!');
+    } catch (err: any) { setError(`SYNC_ERROR: ${err.message}`); } finally { setSyncing(false); }
   };
 
   const filteredResults = useMemo(() => {
@@ -249,7 +266,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V2.0.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V2.0.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -318,7 +335,6 @@ function App() {
                 <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238', mb: 2 }} onClick={handleProcess} disabled={!fileId || processing}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'EXEC_PROCESSING'}
                 </Button>
-                
                 {results.length > 0 && (
                   <Button fullWidth variant="outlined" startIcon={syncing ? <CircularProgress size={16}/> : <SyncIcon />} color="primary" onClick={handleSyncFolders} disabled={syncing}>
                     {syncing ? 'SYNCING...' : 'APPLY & SYNC FOLDERS'}
@@ -337,7 +353,7 @@ function App() {
                       <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
                         <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>COUNT_PREVIEW</Typography>
                         <ResponsiveContainer width="100%" height="85%">
-                          <BarChart data={[{label:'Sharp',val:analyticsData.sharpCount,color:'#6B7A5F'},{label:'Blur',val:analyticsData.blurCount,color:'#A65D57'}]} layout="vertical" margin={{ left: 5, right: 40 }}>
+                          <BarChart data={[{label:'Sharp',val:analyticsData.sharpCount},{label:'Blur',val:analyticsData.blurCount}]} layout="vertical" margin={{ left: 5, right: 40 }}>
                             <XAxis type="number" hide />
                             <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
                             <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
@@ -350,7 +366,7 @@ function App() {
                       <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
                         <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>QUALITY_PREVIEW (AVG)</Typography>
                         <ResponsiveContainer width="100%" height="85%">
-                          <BarChart data={[{label:'AllAvg',val:analyticsData.avgAll,color:'#D4CBB3'},{label:'SharpAvg',val:analyticsData.avgSharp,color:'#6B7A5F'}]} layout="vertical" margin={{ left: 5, right: 40 }}>
+                          <BarChart data={[{label:'AllAvg',val:analyticsData.avgAll},{label:'SharpAvg',val:analyticsData.avgSharp}]} layout="vertical" margin={{ left: 5, right: 40 }}>
                             <XAxis type="number" hide />
                             <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
                             <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
