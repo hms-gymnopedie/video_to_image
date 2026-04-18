@@ -252,7 +252,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.9.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.9.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -329,28 +329,30 @@ function App() {
                   <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER & ANALYTICS</Typography>
                   {analytics && (
                     <Box sx={{ display: 'flex', gap: 2 }}>
-                      <Box sx={{ width: 200, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, fontSize: '9px' }}>COUNT_RATIO</Typography>
-                        <ResponsiveContainer width="100%" height={80}>
-                          <BarChart data={countChartData} layout="vertical" margin={{ left: -30, right: 40 }}>
-                            <XAxis type="number" hide domain={[0, 'dataMax + 10']} />
-                            <YAxis type="category" dataKey="label" hide />
-                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={20}>
+                      {/* Count Chart */}
+                      <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>COUNT_DISTRIBUTION</Typography>
+                        <ResponsiveContainer width="100%" height="85%">
+                          <BarChart data={countChartData} layout="vertical" margin={{ left: 5, right: 40, top: 5, bottom: 5 }}>
+                            <XAxis type="number" hide />
+                            <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
+                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
                               {countChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
-                              <LabelList dataKey="val" position="right" fontSize={10} fill="#4A4238" />
+                              <LabelList dataKey="val" position="right" fontSize={9} fill="#4A4238" />
                             </Bar>
                           </BarChart>
                         </ResponsiveContainer>
                       </Box>
-                      <Box sx={{ width: 200, height: 120, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1, fontSize: '9px' }}>QUALITY_SCORE (AVG)</Typography>
-                        <ResponsiveContainer width="100%" height={80}>
-                          <BarChart data={scoreChartData} layout="vertical" margin={{ left: -30, right: 40 }}>
-                            <XAxis type="number" hide domain={[0, 'dataMax + 10']} />
-                            <YAxis type="category" dataKey="label" hide />
-                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={20}>
+                      {/* Score Chart */}
+                      <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>QUALITY_SCORE (AVG)</Typography>
+                        <ResponsiveContainer width="100%" height="85%">
+                          <BarChart data={scoreChartData} layout="vertical" margin={{ left: 5, right: 40, top: 5, bottom: 5 }}>
+                            <XAxis type="number" hide />
+                            <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
+                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
                               {scoreChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
-                              <LabelList dataKey="val" position="right" fontSize={10} fill="#4A4238" />
+                              <LabelList dataKey="val" position="right" fontSize={9} fill="#4A4238" />
                             </Bar>
                           </BarChart>
                         </ResponsiveContainer>
