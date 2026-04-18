@@ -9,13 +9,16 @@ import time
 import math
 import asyncio
 import numpy as np
+import requests
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import ffmpeg
+import torch
+from segment_anything import sam_model_registry, SamPredictor
 
 app = FastAPI()
 
@@ -27,10 +30,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global SAM Predictor
+SAM_CHECKPOINT = "sam_vit_b_01ec10.pth"
+MODEL_TYPE = "vit_b"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+predictor = None
+
+def download_sam_model():
+    if not os.path.exists(SAM_CHECKPOINT):
+        print(f"Downloading SAM model ({SAM_CHECKPOINT})... this may take a while.")
+        url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec10.pth"
+        response = requests.get(url, stream=True)
+        with open(SAM_CHECKPOINT, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print("Download complete.")
+
+def init_sam():
+    global predictor
+    download_sam_model()
+    sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
+    sam.to(device=DEVICE)
+    predictor = SamPredictor(sam)
+    print(f"SAM model loaded on {DEVICE}")
+
+@app.on_event("startup")
+async def startup_event():
+    init_sam()
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     if request.url.path.startswith("/ws"): return await call_next(request)
-    print(f"DEBUG: {request.method} {request.url}")
     try:
         response = await call_next(request)
         return response
@@ -38,14 +68,17 @@ async def log_requests(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": str(e), "trace": traceback.format_exc()}, headers={"Access-Control-Allow-Origin": "*"})
 
 @app.get("/health")
-async def health_check(): return {"status": "ok", "version": "2.0.2"}
+async def health_check(): return {"status": "ok", "version": "3.0.0", "device": DEVICE}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
+MASK_DIR = "masks"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+os.makedirs(MASK_DIR, exist_ok=True)
 
 app.mount("/images", StaticFiles(directory=DEFAULT_OUTPUT_DIR), name="images")
+app.mount("/masks", StaticFiles(directory=MASK_DIR), name="masks")
 
 @app.get("/directories")
 async def list_directories():
@@ -107,13 +140,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             await websocket.send_json({"type": "error", "message": "Video not found"})
             return
 
-        # Fix: Ensure output_path is a string
-        if isinstance(output_path, list):
-            output_path = output_path[0] if output_path else ""
-        elif output_path is None:
-            output_path = ""
-
-        base_output_dir = os.path.abspath(str(output_path).strip()) if output_path and str(output_path).strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
+        base_output_dir = os.path.abspath(output_path.strip()) if output_path and str(output_path).strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
         os.makedirs(base_output_dir, exist_ok=True)
         
         sharp_dir = os.path.join(base_output_dir, "sharp")
@@ -146,7 +173,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             while True:
                 try:
                     files = [f for f in os.listdir(temp_extract_dir) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
-                    await websocket.send_json({"type": "progress", "current": len(files), "message": f"EXTRACTING: {len(files)} generated"})
+                    await websocket.send_json({"type": "progress", "current": int(len(files)), "message": f"EXTRACTING: {len(files)} generated"})
                 except: break
                 await asyncio.sleep(1.0)
 
@@ -179,7 +206,13 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             shutil.move(src_path, dst_path)
             
             preview_url = f"/images/{os.path.relpath(dst_path, os.path.abspath(DEFAULT_OUTPUT_DIR))}" if is_internal else None
-            results.append({"filename": str(filename), "url": preview_url, "score": round(variance, 2), "is_blurry": is_blurry})
+            results.append({
+                "filename": str(filename), 
+                "url": preview_url, 
+                "score": round(variance, 2), 
+                "is_blurry": is_blurry,
+                "full_path": dst_path
+            })
             
             if i % 10 == 0 or i == len(raw_files) - 1:
                 await websocket.send_json({"type": "progress", "current": i + 1, "total": len(raw_files), "message": f"SORTING: {i+1}/{len(raw_files)}"})
@@ -195,6 +228,52 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         try: await websocket.send_json({"type": "error", "message": str(e)})
         except: pass
 
+class SegmentRequest(BaseModel):
+    image_path: str
+    points: List[List[int]] # [[x, y], ...]
+    labels: List[int] # [1, ...] for positive, [0, ...] for negative
+
+@app.post("/segment")
+async def segment_image(data: SegmentRequest):
+    if predictor is None: raise HTTPException(status_code=503, detail="SAM model not initialized")
+    
+    try:
+        image = cv2.imread(data.image_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        predictor.set_image(image)
+        
+        input_points = np.array(data.points)
+        input_labels = np.array(data.labels)
+        
+        masks, scores, logits = predictor.predict(
+            point_coords=input_points,
+            point_labels=input_labels,
+            multimask_output=True,
+        )
+        
+        # Take the best mask
+        mask = masks[np.argmax(scores)]
+        
+        # Generate visualized mask (Blue overlay)
+        mask_overlay = image.copy()
+        mask_overlay[mask] = [0, 0, 255] # Red overlay
+        
+        mask_id = str(uuid.uuid4())
+        mask_filename = f"mask_{mask_id}.png"
+        mask_path = os.path.join(MASK_DIR, mask_filename)
+        
+        # Save mask as transparency or overlay
+        cv2.imwrite(mask_path, cv2.cvtColor(mask_overlay, cv2.COLOR_RGB2BGR))
+        
+        return {
+            "mask_url": f"/masks/{mask_filename}",
+            "mask_path": mask_path,
+            "status": "success"
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 class SyncRequest(BaseModel):
     output_dir: str
     threshold: float
@@ -205,26 +284,15 @@ async def sync_folders(data: SyncRequest):
     try:
         sharp_dir = os.path.join(data.output_dir, "sharp")
         blur_dir = os.path.join(data.output_dir, "blur")
-        os.makedirs(sharp_dir, exist_ok=True)
-        os.makedirs(blur_dir, exist_ok=True)
-        
+        for d in [sharp_dir, blur_dir]: os.makedirs(d, exist_ok=True)
         for res in data.results:
             filename = res['filename']
-            score = res['score']
-            should_be_blurry = score < data.threshold
-            
-            # Find current location
-            current_sharp = os.path.join(sharp_dir, filename)
-            current_blur = os.path.join(blur_dir, filename)
-            
-            if should_be_blurry and os.path.exists(current_sharp):
-                shutil.move(current_sharp, os.path.join(blur_dir, filename))
-            elif not should_be_blurry and os.path.exists(current_blur):
-                shutil.move(current_blur, os.path.join(sharp_dir, filename))
-                
+            should_be_blurry = res['score'] < data.threshold
+            current_sharp, current_blur = os.path.join(sharp_dir, filename), os.path.join(blur_dir, filename)
+            if should_be_blurry and os.path.exists(current_sharp): shutil.move(current_sharp, current_blur)
+            elif not should_be_blurry and os.path.exists(current_blur): shutil.move(current_blur, current_sharp)
         return {"status": "success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
