@@ -35,11 +35,10 @@ async def log_requests(request: Request, call_next):
         response = await call_next(request)
         return response
     except Exception as e:
-        print(f"DEBUG: SERVER_ERROR: {str(e)}")
         return JSONResponse(status_code=500, content={"detail": str(e), "trace": traceback.format_exc()}, headers={"Access-Control-Allow-Origin": "*"})
 
 @app.get("/health")
-async def health_check(): return {"status": "ok", "version": "1.9.0"}
+async def health_check(): return {"status": "ok", "version": "2.0.0"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -60,18 +59,6 @@ async def list_directories():
         except Exception: pass
         return d
     return get_dir_structure(os.path.abspath(DEFAULT_OUTPUT_DIR))
-
-class CreateDirRequest(BaseModel):
-    parent_path: str
-    new_name: str
-
-@app.post("/create-directory")
-async def create_directory(data: CreateDirRequest):
-    new_path = os.path.join(data.parent_path, data.new_name)
-    try:
-        os.makedirs(new_path, exist_ok=True)
-        return {"status": "success", "path": new_path}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
@@ -95,12 +82,7 @@ async def get_metadata(file_id: str):
         format_info = probe.get('format', {})
         fps_raw = video_stream.get('avg_frame_rate', '0/0')
         fps = eval(fps_raw) if '/' in fps_raw else float(fps_raw)
-        return {
-            "duration": float(format_info.get('duration', 0)),
-            "width": int(video_stream.get('width', 0)),
-            "height": int(video_stream.get('height', 0)),
-            "avg_frame_rate": f"{round(fps, 2)} FPS",
-        }
+        return {"duration": float(format_info.get('duration', 0)), "width": int(video_stream.get('width', 0)), "height": int(video_stream.get('height', 0)), "avg_frame_rate": f"{round(fps, 2)} FPS"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/process/{file_id}")
@@ -109,7 +91,6 @@ async def websocket_process(websocket: WebSocket, file_id: str):
     try:
         raw_data = await websocket.receive_text()
         data = json.loads(raw_data)
-        
         fps = float(data.get('fps', 1.0))
         scale = data.get('scale', "-1:-1")
         qscale = int(data.get('qscale', 2))
@@ -129,31 +110,24 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         base_output_dir = os.path.abspath(output_path.strip()) if output_path and output_path.strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
         os.makedirs(base_output_dir, exist_ok=True)
         
-        # Subdirectories
         sharp_dir = os.path.join(base_output_dir, "sharp")
         blur_dir = os.path.join(base_output_dir, "blur")
-        
-        # Clean and create
         for d in [sharp_dir, blur_dir]:
             if os.path.exists(d): shutil.rmtree(d)
             os.makedirs(d, exist_ok=True)
 
-        # Extraction phase
         temp_extract_dir = os.path.join(base_output_dir, f"temp_{uuid.uuid4().hex}")
         os.makedirs(temp_extract_dir, exist_ok=True)
         
-        await websocket.send_json({"type": "status", "message": "1/3 EXTRACTING_FRAMES"})
-        
-        stream = ffmpeg.input(video_path)
-        stream = ffmpeg.filter(stream, 'fps', fps=fps)
+        await websocket.send_json({"type": "status", "message": "1/3 EXTRACTING"})
+        stream = ffmpeg.input(video_path).filter('fps', fps=fps)
         if scale != "-1:-1":
             try:
                 w, h = scale.split(':')
-                stream = ffmpeg.filter(stream, 'scale', w=w, h=h)
+                stream = stream.filter('scale', w=w, h=h)
             except: pass
         
         output_pattern = os.path.join(temp_extract_dir, naming_rule)
-        
         def run_ffmpeg_sync():
             try:
                 (ffmpeg.output(stream, output_pattern, qscale=qscale).overwrite_output().run(capture_stdout=True, capture_stderr=True))
@@ -178,69 +152,73 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             await websocket.send_json({"type": "error", "message": "FFmpeg failed"})
             return
 
-        # ANALYSIS AND MOVE PHASE
-        await websocket.send_json({"type": "status", "message": "2/3 ANALYZING_AND_SORTING"})
-        
-        # Give OS a moment to finish file writing
+        await websocket.send_json({"type": "status", "message": "2/3 ANALYZING & SORTING"})
         time.sleep(1.0)
         
         results = []
         raw_files = sorted([f for f in os.listdir(temp_extract_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
         is_internal = base_output_dir.startswith(os.path.abspath(DEFAULT_OUTPUT_DIR))
         
-        all_scores = []
-        sharp_scores = []
-        
         for i, filename in enumerate(raw_files):
             src_path = os.path.join(temp_extract_dir, filename)
             image = cv2.imread(src_path)
             if image is None: continue
-            
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
             if math.isnan(variance) or math.isinf(variance): variance = 0.0
             
-            is_blurry_val = bool(variance < threshold)
-            all_scores.append(variance)
-            
-            target_dir = blur_dir if is_blurry_val else sharp_dir
-            if not is_blurry_val: sharp_scores.append(variance)
-            
+            is_blurry = bool(variance < threshold)
+            target_dir = blur_dir if is_blurry else sharp_dir
             dst_path = os.path.join(target_dir, filename)
-            shutil.move(src_path, dst_path) # PHYSICALLY MOVE FILE
+            shutil.move(src_path, dst_path)
             
             preview_url = f"/images/{os.path.relpath(dst_path, os.path.abspath(DEFAULT_OUTPUT_DIR))}" if is_internal else None
-            results.append({"filename": str(filename), "url": preview_url, "score": round(variance, 2), "is_blurry": is_blurry_val})
+            results.append({"filename": str(filename), "url": preview_url, "score": round(variance, 2), "is_blurry": is_blurry})
             
             if i % 10 == 0 or i == len(raw_files) - 1:
                 await websocket.send_json({"type": "progress", "current": i + 1, "total": len(raw_files), "message": f"SORTING: {i+1}/{len(raw_files)}"})
 
-        # Final cleanup
         try: shutil.rmtree(temp_extract_dir)
         except: pass
 
-        avg_all = sum(all_scores) / len(all_scores) if all_scores else 0
-        avg_sharp = sum(sharp_scores) / len(sharp_scores) if sharp_scores else 0
-
-        await websocket.send_json({
-            "type": "complete",
-            "results": results,
-            "output_dir": str(base_output_dir),
-            "analytics": {
-                "avg_all": float(round(avg_all, 2)),
-                "avg_sharp": float(round(avg_sharp, 2)),
-                "total_count": len(all_scores),
-                "sharp_count": len(sharp_scores),
-                "blur_count": len(all_scores) - len(sharp_scores)
-            }
-        })
+        await websocket.send_json({"type": "complete", "results": results, "output_dir": str(base_output_dir)})
 
     except WebSocketDisconnect: print("WebSocket disconnected")
     except Exception as e:
-        print(f"WS Error: {str(e)}")
         traceback.print_exc()
         try: await websocket.send_json({"type": "error", "message": str(e)})
         except: pass
+
+class SyncRequest(BaseModel):
+    output_dir: str
+    threshold: float
+    results: List[dict]
+
+@app.post("/sync-folders")
+async def sync_folders(data: SyncRequest):
+    try:
+        sharp_dir = os.path.join(data.output_dir, "sharp")
+        blur_dir = os.path.join(data.output_dir, "blur")
+        os.makedirs(sharp_dir, exist_ok=True)
+        os.makedirs(blur_dir, exist_ok=True)
+        
+        for res in data.results:
+            filename = res['filename']
+            score = res['score']
+            should_be_blurry = score < data.threshold
+            
+            # Find current location
+            current_sharp = os.path.join(sharp_dir, filename)
+            current_blur = os.path.join(blur_dir, filename)
+            
+            if should_be_blurry and os.path.exists(current_sharp):
+                shutil.move(current_sharp, os.path.join(blur_dir, filename))
+            elif not should_be_blurry and os.path.exists(current_blur):
+                shutil.move(current_blur, os.path.join(sharp_dir, filename))
+                
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

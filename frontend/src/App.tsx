@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Container,
   Typography,
@@ -45,6 +45,7 @@ import {
   Folder as FolderIcon,
   CreateNewFolder as CreateNewFolderIcon,
   Refresh as RefreshIcon,
+  Sync as SyncIcon,
 } from '@mui/icons-material';
 import { SimpleTreeView } from '@mui/x-tree-view/SimpleTreeView';
 import { TreeItem } from '@mui/x-tree-view/TreeItem';
@@ -81,17 +82,9 @@ interface VideoMetadata {
 
 interface ProcessResult {
   filename: string;
-  url: string;
+  url: string | null;
   score: number;
   is_blurry: boolean;
-}
-
-interface Analytics {
-  avg_all: number;
-  avg_sharp: number;
-  total_count: number;
-  sharp_count: number;
-  blur_count: number;
 }
 
 interface DirectoryNode {
@@ -113,8 +106,9 @@ function App() {
   const [metadata, setMetadata] = useState<VideoMetadata | null>(null);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [results, setResults] = useState<ProcessResult[]>([]);
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [serverOutputDir, setServerOutputDir] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const [preset, setPreset] = useState('');
@@ -135,6 +129,26 @@ function App() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [targetParentPath, setTargetParentPath] = useState('');
   const [tabValue, setTabValue] = useState(0);
+
+  // Real-time Preview Logic
+  const analyticsData = useMemo(() => {
+    if (results.length === 0) return null;
+    
+    const sharp = results.filter(r => r.score >= threshold);
+    const blur = results.filter(r => r.score < threshold);
+    
+    const avgAll = results.reduce((acc, curr) => acc + curr.score, 0) / results.length;
+    const avgSharp = sharp.length > 0 ? sharp.reduce((acc, curr) => acc + curr.score, 0) / sharp.length : 0;
+    
+    return {
+      sharpCount: sharp.length,
+      blurCount: blur.length,
+      avgAll: parseFloat(avgAll.toFixed(2)),
+      avgSharp: parseFloat(avgSharp.toFixed(2)),
+      sharpList: sharp,
+      blurList: blur
+    };
+  }, [results, threshold]);
 
   const fetchDirectories = async () => {
     try {
@@ -173,33 +187,9 @@ function App() {
     } catch (err: any) { setError(`CONNECTION_ERROR: ${err.message}`); } finally { setLoading(false); }
   };
 
-  useEffect(() => { if (metadata) setTotalEstimated(Math.ceil(metadata.duration * fps)); }, [fps, metadata]);
-
-  const applyPreset = (key: keyof typeof PRESETS) => {
-    const p = PRESETS[key];
-    setPreset(key); setFps(p.fps); setQscale(p.qscale); setThreshold(p.threshold);
-  };
-
-  const handleScaleChange = (option: string) => {
-    setScaleOption(option);
-    if (!metadata) return;
-    if (option === 'original') setScale('-1:-1');
-    else if (option === '1080p') setScale('1920:1080');
-    else if (option === '720p') setScale('1280:720');
-    else if (option === 'half') setScale(`${Math.round(metadata.width/2)}:${Math.round(metadata.height/2)}`);
-  };
-
-  const handleCreateFolder = async () => {
-    if (!newFolderName) return;
-    try {
-      await axios.post(`${API_BASE_URL}/create-directory`, { parent_path: targetParentPath, new_name: newFolderName });
-      setNewFolderName(''); setIsDialogOpen(false); fetchDirectories();
-    } catch (err: any) { alert(`Folder creation failed: ${err.message}`); }
-  };
-
   const handleProcess = () => {
     if (!fileId) return;
-    setProcessing(true); setResults([]); setAnalytics(null); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
+    setProcessing(true); setResults([]); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
     const ws = new WebSocket(`${WS_BASE_URL}/ws/process/${fileId}`);
     ws.onopen = () => ws.send(JSON.stringify({ fps, scale, qscale, naming_rule: namingRule, threshold, output_path: outputPath }));
     ws.onmessage = (event) => {
@@ -209,7 +199,7 @@ function App() {
         if (data.current) setCurrentProgress(data.current);
       } else if (data.type === 'complete') {
         setResults(data.results);
-        setAnalytics(data.analytics);
+        setServerOutputDir(data.output_dir);
         setProcessing(false);
         fetchDirectories();
         ws.close();
@@ -220,20 +210,27 @@ function App() {
     ws.onerror = () => { setError('WebSocket Connection Failed.'); setProcessing(false); };
   };
 
-  const filteredResults = tabValue === 0 ? results : (tabValue === 1 ? results.filter(r => !r.is_blurry) : results.filter(r => r.is_blurry));
-  const sharpCount = results.filter(r => !r.is_blurry).length;
-  const blurCount = results.length - sharpCount;
+  const handleSyncFolders = async () => {
+    if (!serverOutputDir || results.length === 0) return;
+    setSyncing(true);
+    try {
+      await axios.post(`${API_BASE_URL}/sync-folders`, {
+        output_dir: serverOutputDir,
+        threshold: threshold,
+        results: results
+      });
+      fetchDirectories();
+      alert('Physical folders synchronized based on new threshold!');
+    } catch (err: any) {
+      setError(`SYNC_ERROR: ${err.message}`);
+    } finally { setSyncing(false); }
+  };
 
-  // Finalized Chart Data
-  const countChartData = [
-    { label: 'Sharp', val: sharpCount, color: '#6B7A5F' },
-    { label: 'Blur', val: blurCount, color: '#A65D57' }
-  ];
-
-  const scoreChartData = analytics ? [
-    { label: 'AllAvg', val: analytics.avg_all, color: '#D4CBB3' },
-    { label: 'SharpAvg', val: analytics.avg_sharp, color: '#6B7A5F' }
-  ] : [];
+  const filteredResults = useMemo(() => {
+    if (tabValue === 0) return results;
+    if (tabValue === 1) return results.filter(r => r.score >= threshold);
+    return results.filter(r => r.score < threshold);
+  }, [results, threshold, tabValue]);
 
   const renderTree = (node: DirectoryNode) => (
     <TreeItem key={node.path} itemId={node.path} label={
@@ -252,7 +249,7 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_PIPELINE <Chip label="V1.9.1" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_PIPELINE <Chip label="V2.0.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
             {metadata && <Typography variant="caption" color="success.main">● BACKEND_CONNECTED</Typography>}
           </Toolbar>
@@ -260,6 +257,7 @@ function App() {
 
         <Container maxWidth="xl">
           <Grid container spacing={3}>
+            {/* Sidebar */}
             <Grid item xs={12} md={4}>
               <Paper sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary">[01] INPUT_SOURCE</Typography>
@@ -317,41 +315,46 @@ function App() {
                     GUIDE: {threshold < 50 ? "Lenient" : threshold < 150 ? "Moderate" : threshold < 300 ? "Strict" : "Ultra-Strict"}
                   </Typography>
                 </Box>
-                <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing}>
+                <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238', mb: 2 }} onClick={handleProcess} disabled={!fileId || processing}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'EXEC_PROCESSING'}
                 </Button>
+                
+                {results.length > 0 && (
+                  <Button fullWidth variant="outlined" startIcon={syncing ? <CircularProgress size={16}/> : <SyncIcon />} color="primary" onClick={handleSyncFolders} disabled={syncing}>
+                    {syncing ? 'SYNCING...' : 'APPLY & SYNC FOLDERS'}
+                  </Button>
+                )}
               </Paper>
             </Grid>
 
+            {/* Main Area */}
             <Grid item xs={12} md={8}>
               <Paper sx={{ p: 3, minHeight: '85vh', borderLeft: '4px solid #4A4238' }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
-                  <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER & ANALYTICS</Typography>
-                  {analytics && (
+                  <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER & VISUAL_PREVIEW</Typography>
+                  {analyticsData && (
                     <Box sx={{ display: 'flex', gap: 2 }}>
-                      {/* Count Chart */}
                       <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>COUNT_DISTRIBUTION</Typography>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>COUNT_PREVIEW</Typography>
                         <ResponsiveContainer width="100%" height="85%">
-                          <BarChart data={countChartData} layout="vertical" margin={{ left: 5, right: 40, top: 5, bottom: 5 }}>
+                          <BarChart data={[{label:'Sharp',val:analyticsData.sharpCount,color:'#6B7A5F'},{label:'Blur',val:analyticsData.blurCount,color:'#A65D57'}]} layout="vertical" margin={{ left: 5, right: 40 }}>
                             <XAxis type="number" hide />
                             <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
                             <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
-                              {countChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                              <Cell fill="#6B7A5F"/><Cell fill="#A65D57"/>
                               <LabelList dataKey="val" position="right" fontSize={9} fill="#4A4238" />
                             </Bar>
                           </BarChart>
                         </ResponsiveContainer>
                       </Box>
-                      {/* Score Chart */}
                       <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>QUALITY_SCORE (AVG)</Typography>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px', color: '#8C8273' }}>QUALITY_PREVIEW (AVG)</Typography>
                         <ResponsiveContainer width="100%" height="85%">
-                          <BarChart data={scoreChartData} layout="vertical" margin={{ left: 5, right: 40, top: 5, bottom: 5 }}>
+                          <BarChart data={[{label:'AllAvg',val:analyticsData.avgAll,color:'#D4CBB3'},{label:'SharpAvg',val:analyticsData.avgSharp,color:'#6B7A5F'}]} layout="vertical" margin={{ left: 5, right: 40 }}>
                             <XAxis type="number" hide />
                             <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
                             <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
-                              {scoreChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                              <Cell fill="#D4CBB3"/><Cell fill="#6B7A5F"/>
                               <LabelList dataKey="val" position="right" fontSize={9} fill="#4A4238" />
                             </Bar>
                           </BarChart>
@@ -372,8 +375,8 @@ function App() {
                 <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
                   <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} textColor="primary" indicatorColor="primary">
                     <Tab label={`ALL (${results.length})`} sx={{ fontSize: '11px' }} />
-                    <Tab label={`SHARP (${sharpCount})`} sx={{ fontSize: '11px' }} />
-                    <Tab label={`BLUR (${blurCount})`} sx={{ fontSize: '11px' }} />
+                    <Tab label={`SHARP (${analyticsData?.sharpCount || 0})`} sx={{ fontSize: '11px' }} />
+                    <Tab label={`BLUR (${analyticsData?.blurCount || 0})`} sx={{ fontSize: '11px' }} />
                   </Tabs>
                 </Box>
 
@@ -381,12 +384,12 @@ function App() {
                   <Grid container spacing={1.5}>
                     {filteredResults.map((res, index) => (
                       <Grid item xs={6} sm={4} md={3} lg={2.4} key={index}>
-                        <Card variant="outlined" sx={{ borderRadius: 0, opacity: res.is_blurry ? 0.6 : 1 }}>
-                          <CardMedia component="img" height="100" image={`${API_BASE_URL}${res.url}`} sx={{ filter: res.is_blurry ? 'grayscale(80%)' : 'none' }} />
+                        <Card variant="outlined" sx={{ borderRadius: 0, opacity: (res.score < threshold) ? 0.6 : 1 }}>
+                          <CardMedia component="img" height="100" image={`${API_BASE_URL}${res.url}`} sx={{ filter: (res.score < threshold) ? 'grayscale(80%)' : 'none' }} />
                           <CardContent sx={{ p: 0.8 }}>
                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <Typography variant="caption" sx={{ fontSize: '9px', fontWeight: 'bold' }}>S:{res.score}</Typography>
-                              <Chip label={res.is_blurry ? 'B' : 'S'} size="small" color={res.is_blurry ? 'error' : 'success'} sx={{ height: 12, fontSize: '7px', minWidth: 16 }} />
+                              <Chip label={(res.score < threshold) ? 'B' : 'S'} size="small" color={(res.score < threshold) ? 'error' : 'success'} sx={{ height: 12, fontSize: '7px', minWidth: 16 }} />
                             </Box>
                           </CardContent>
                         </Card>
