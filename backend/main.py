@@ -38,7 +38,7 @@ async def log_requests(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": str(e), "trace": traceback.format_exc()}, headers={"Access-Control-Allow-Origin": "*"})
 
 @app.get("/health")
-async def health_check(): return {"status": "ok", "version": "2.0.0"}
+async def health_check(): return {"status": "ok", "version": "2.0.2"}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
@@ -107,7 +107,13 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             await websocket.send_json({"type": "error", "message": "Video not found"})
             return
 
-        base_output_dir = os.path.abspath(output_path.strip()) if output_path and output_path.strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
+        # Fix: Ensure output_path is a string
+        if isinstance(output_path, list):
+            output_path = output_path[0] if output_path else ""
+        elif output_path is None:
+            output_path = ""
+
+        base_output_dir = os.path.abspath(str(output_path).strip()) if output_path and str(output_path).strip() else os.path.join(os.path.abspath(DEFAULT_OUTPUT_DIR), file_id)
         os.makedirs(base_output_dir, exist_ok=True)
         
         sharp_dir = os.path.join(base_output_dir, "sharp")

@@ -1,6 +1,6 @@
 # Project Update History
 
-## [2026-04-16] Update V2.0.1
-- **Fixed:** Restored missing `handleCreateFolder` function that caused UI crash when opening the new folder dialog.
-- **Improved:** Real-time preview charts now correctly render with Y-axis labels.
-- **Updated:** Versioning to V2.0.1.
+## [2026-04-16] Update V2.0.2
+- **Fixed:** Process error (`'list' object has no attribute 'strip'`) caused by unexpected data type of `output_path` in WebSocket requests.
+- **Improved:** Robust input handling for output directory paths.
+- **Updated:** Versioning to V2.0.2.
