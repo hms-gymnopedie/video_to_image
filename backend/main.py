@@ -30,46 +30,85 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global SAM Predictor
-SAM_CHECKPOINT = "sam_vit_b_01ec10.pth"
-MODEL_TYPE = "vit_b"
+# SAM Model Configurations
+MODEL_CONFIGS = {
+    "vit_b": {
+        "checkpoint": "sam_vit_b_01ec10.pth",
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec10.pth"
+    },
+    "vit_l": {
+        "checkpoint": "sam_vit_l_0b31ee.pth",
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b31ee.pth"
+    },
+    "vit_h": {
+        "checkpoint": "sam_vit_h_4b8939.pth",
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
+    }
+}
+
+current_model_type = "vit_b"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 predictor = None
 
-def download_sam_model():
-    if not os.path.exists(SAM_CHECKPOINT):
-        print(f"Downloading SAM model ({SAM_CHECKPOINT})... this may take a while.")
-        url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec10.pth"
-        response = requests.get(url, stream=True)
-        with open(SAM_CHECKPOINT, "wb") as f:
+def download_model(model_type):
+    config = MODEL_CONFIGS[model_type]
+    checkpoint = config["checkpoint"]
+    if not os.path.exists(checkpoint):
+        print(f"Downloading {model_type} model ({checkpoint})... This may take several minutes.")
+        response = requests.get(config["url"], stream=True)
+        with open(checkpoint, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        print("Download complete.")
+        print(f"Download complete: {checkpoint}")
 
-def init_sam():
-    global predictor
-    download_sam_model()
-    sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
-    sam.to(device=DEVICE)
-    predictor = SamPredictor(sam)
-    print(f"SAM model loaded on {DEVICE}")
+def load_sam_model(model_type):
+    global predictor, current_model_type
+    try:
+        download_model(model_type)
+        print(f"Loading {model_type} into memory ({DEVICE})...")
+        
+        # Clear existing memory
+        if predictor is not None:
+            del predictor
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        sam = sam_model_registry[model_type](checkpoint=MODEL_CONFIGS[model_type]["checkpoint"])
+        sam.to(device=DEVICE)
+        predictor = SamPredictor(sam)
+        current_model_type = model_type
+        print(f"SAM {model_type} loaded successfully.")
+        return True
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return False
 
 @app.on_event("startup")
 async def startup_event():
-    init_sam()
+    # Initial load (default vit_b)
+    load_sam_model("vit_b")
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    if request.url.path.startswith("/ws"): return await call_next(request)
-    try:
-        response = await call_next(request)
-        return response
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e), "trace": traceback.format_exc()}, headers={"Access-Control-Allow-Origin": "*"})
+@app.post("/change-model/{model_type}")
+async def change_model(model_type: str):
+    if model_type not in MODEL_CONFIGS:
+        raise HTTPException(status_code=400, detail="Invalid model type")
+    
+    success = load_sam_model(model_type)
+    if success:
+        return {"status": "success", "model": model_type, "device": DEVICE}
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to load model {model_type}")
 
 @app.get("/health")
-async def health_check(): return {"status": "ok", "version": "3.0.0", "device": DEVICE}
+async def health_check(): 
+    return {
+        "status": "ok", 
+        "version": "3.1.0", 
+        "device": DEVICE, 
+        "current_model": current_model_type
+    }
 
+# --- Standard App Logic (Upload, Metadata, WebSocket Process, Sync) ---
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
 MASK_DIR = "masks"
@@ -230,69 +269,32 @@ async def websocket_process(websocket: WebSocket, file_id: str):
 
 class SegmentRequest(BaseModel):
     image_path: str
-    points: List[List[int]] # [[x, y], ...]
-    labels: List[int] # [1, ...] for positive, [0, ...] for negative
+    points: List[List[int]]
+    labels: List[int]
 
 @app.post("/segment")
 async def segment_image(data: SegmentRequest):
     if predictor is None: raise HTTPException(status_code=503, detail="SAM model not initialized")
-    
     try:
         image = cv2.imread(data.image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         predictor.set_image(image)
-        
-        input_points = np.array(data.points)
-        input_labels = np.array(data.labels)
-        
-        masks, scores, logits = predictor.predict(
-            point_coords=input_points,
-            point_labels=input_labels,
+        masks, scores, _ = predictor.predict(
+            point_coords=np.array(data.points),
+            point_labels=np.array(data.labels),
             multimask_output=True,
         )
-        
-        # Take the best mask
         mask = masks[np.argmax(scores)]
-        
-        # Generate visualized mask (Blue overlay)
         mask_overlay = image.copy()
         mask_overlay[mask] = [0, 0, 255] # Red overlay
-        
         mask_id = str(uuid.uuid4())
         mask_filename = f"mask_{mask_id}.png"
         mask_path = os.path.join(MASK_DIR, mask_filename)
-        
-        # Save mask as transparency or overlay
         cv2.imwrite(mask_path, cv2.cvtColor(mask_overlay, cv2.COLOR_RGB2BGR))
-        
-        return {
-            "mask_url": f"/masks/{mask_filename}",
-            "mask_path": mask_path,
-            "status": "success"
-        }
+        return {"mask_url": f"/masks/{mask_filename}", "status": "success"}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-class SyncRequest(BaseModel):
-    output_dir: str
-    threshold: float
-    results: List[dict]
-
-@app.post("/sync-folders")
-async def sync_folders(data: SyncRequest):
-    try:
-        sharp_dir = os.path.join(data.output_dir, "sharp")
-        blur_dir = os.path.join(data.output_dir, "blur")
-        for d in [sharp_dir, blur_dir]: os.makedirs(d, exist_ok=True)
-        for res in data.results:
-            filename = res['filename']
-            should_be_blurry = res['score'] < data.threshold
-            current_sharp, current_blur = os.path.join(sharp_dir, filename), os.path.join(blur_dir, filename)
-            if should_be_blurry and os.path.exists(current_sharp): shutil.move(current_sharp, current_blur)
-            elif not should_be_blurry and os.path.exists(current_blur): shutil.move(current_blur, current_sharp)
-        return {"status": "success"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
