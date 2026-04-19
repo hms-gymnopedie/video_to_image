@@ -1,5 +1,12 @@
 # Project Update History
 
+## [2026-04-16] Update V3.2.0
+- **Restored:** Missing UI features from previous AI update, including Folder Browser controls (Refresh/New Folder).
+- **Restored:** Application Presets (3DGS, 2DGS, COLMAP) for quick pipeline configuration.
+- **Restored:** Real-time Threshold Guide under the slider to assist in quality filtering.
+- **Improved:** Integrated AI Model Selection with restored pipeline settings for a complete dashboard experience.
+- **Updated:** Versioning to V3.2.0.
+
 ## [2026-04-16] Update V3.1.0
 - **Added:** SAM Multi-Model Support. Users can now choose between ViT-B (Fast), ViT-L (Large), and ViT-H (Highest Accuracy) models.
 - **Added:** Dynamic Model Loading. Backend automatically downloads and switches models upon user request.

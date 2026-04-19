@@ -84,6 +84,12 @@ interface ProcessResult {
   full_path?: string;
 }
 
+const PRESETS = {
+  '3DGS': { fps: 5, threshold: 100, label: '3D Gaussian Splatting' },
+  '2DGS': { fps: 2, threshold: 80, label: '2D Gaussian Splatting' },
+  'COLMAP': { fps: 3, threshold: 120, label: 'COLMAP/SfM' },
+};
+
 function App() {
   const [file, setFile] = useState<File | null>(null);
   const [fileId, setFileId] = useState<string | null>(null);
@@ -94,11 +100,9 @@ function App() {
   const [outputPath, setOutputPath] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  // SAM Config
   const [samModel, setSamModel] = useState('vit_b');
   const [isModelLoading, setIsModelLoading] = useState(false);
-
-  // Settings
+  const [preset, setPreset] = useState('');
   const [fps, setFps] = useState(1);
   const [threshold, setThreshold] = useState(100);
   const [progressMsg, setProgressMsg] = useState('');
@@ -106,9 +110,11 @@ function App() {
   const [totalEstimated, setTotalEstimated] = useState(0);
 
   const [directories, setDirectories] = useState<any>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [targetParentPath, setTargetParentPath] = useState('');
   const [tabValue, setTabValue] = useState(0);
 
-  // Masking Editor
   const [isMaskEditorOpen, setIsMaskEditorOpen] = useState(false);
   const [editingImage, setEditingImage] = useState<ProcessResult | null>(null);
   const [points, setPoints] = useState<number[][]>([]);
@@ -131,11 +137,20 @@ function App() {
     try {
       await axios.post(`${API_BASE_URL}/change-model/${newModel}`);
       setSamModel(newModel);
-    } catch (err: any) {
-      setError(`MODEL_LOAD_ERROR: ${err.message}`);
-    } finally {
-      setIsModelLoading(false);
-    }
+    } catch (err: any) { setError(`MODEL_LOAD_ERROR: ${err.message}`); } finally { setIsModelLoading(false); }
+  };
+
+  const applyPreset = (key: keyof typeof PRESETS) => {
+    const p = PRESETS[key];
+    setPreset(key); setFps(p.fps); setThreshold(p.threshold);
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName) return;
+    try {
+      await axios.post(`${API_BASE_URL}/create-directory`, { parent_path: targetParentPath, new_name: newFolderName });
+      setNewFolderName(''); setIsDialogOpen(false); fetchDirectories();
+    } catch (err: any) { alert(`Folder creation failed: ${err.message}`); }
   };
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -175,10 +190,7 @@ function App() {
         setProgressMsg(data.message);
         if (data.current) setCurrentProgress(data.current);
       } else if (data.type === 'complete') {
-        setResults(data.results);
-        setProcessing(false);
-        fetchDirectories();
-        ws.close();
+        setResults(data.results); setProcessing(false); fetchDirectories(); ws.close();
       } else if (data.type === 'error') {
         setError(`PROCESS_ERROR: ${data.message}`); setProcessing(false); ws.close();
       }
@@ -186,10 +198,7 @@ function App() {
   };
 
   const handleImageClick = (res: ProcessResult) => {
-    setEditingImage(res);
-    setPoints([]);
-    setMaskUrl(null);
-    setIsMaskEditorOpen(true);
+    setEditingImage(res); setPoints([]); setMaskUrl(null); setIsMaskEditorOpen(true);
   };
 
   const handleCanvasClick = async (e: React.MouseEvent<HTMLImageElement>) => {
@@ -197,23 +206,13 @@ function App() {
     const rect = imgRef.current.getBoundingClientRect();
     const x = Math.round(((e.clientX - rect.left) / rect.width) * (metadata?.width || 1920));
     const y = Math.round(((e.clientY - rect.top) / rect.height) * (metadata?.height || 1080));
-    
     const newPoints = [...points, [x, y]];
     setPoints(newPoints);
-    
     setIsSegmenting(true);
     try {
-      const res = await axios.post(`${API_BASE_URL}/segment`, {
-        image_path: editingImage.full_path,
-        points: newPoints,
-        labels: new Array(newPoints.length).fill(1)
-      });
+      const res = await axios.post(`${API_BASE_URL}/segment`, { image_path: editingImage.full_path, points: newPoints, labels: new Array(newPoints.length).fill(1) });
       setMaskUrl(`${API_BASE_URL}${res.data.mask_url}?t=${Date.now()}`);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsSegmenting(false);
-    }
+    } catch (err) { console.error(err); } finally { setIsSegmenting(false); }
   };
 
   const analyticsData = useMemo(() => {
@@ -234,6 +233,7 @@ function App() {
       <Box sx={{ display: 'flex', alignItems: 'center', py: 0.5 }}>
         <FolderIcon sx={{ mr: 1, fontSize: 18, color: '#D4CBB3' }} />
         <Typography variant="caption" sx={{ flexGrow: 1 }}>{node.name}</Typography>
+        <IconButton size="small" onClick={(e) => { e.stopPropagation(); setTargetParentPath(node.path); setIsDialogOpen(true); }}><CreateNewFolderIcon sx={{ fontSize: 16 }} /></IconButton>
       </Box>
     }>{Array.isArray(node.children) ? node.children.map((child: any) => renderTree(child)) : null}</TreeItem>
   );
@@ -245,39 +245,35 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V3.1.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V3.2.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
           </Toolbar>
         </AppBar>
 
         <Container maxWidth="xl">
           <Grid container spacing={3}>
-            {/* Sidebar */}
+            {/* Sidebar Column */}
             <Grid item xs={12} md={4}>
               <Paper sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB' }}>
-                <Typography variant="subtitle2" gutterBottom color="textSecondary">[01] INPUT</Typography>
+                <Typography variant="subtitle2" gutterBottom color="textSecondary">[01] INPUT_SOURCE</Typography>
                 <Box {...getRootProps()} sx={{ border: '2px dashed #D4CBB3', borderRadius: 1, p: 4, textAlign: 'center', cursor: 'pointer', bgcolor: isDragActive ? '#F4F1EA' : 'transparent', '&:hover': { borderColor: '#4A4238', bgcolor: '#F4F1EA' } }}>
                   <input {...getInputProps()} /><CloudUploadIcon sx={{ fontSize: 40, color: '#D4CBB3', mb: 1 }} />
                   <Typography variant="body2">{isDragActive ? "Drop video here..." : "Drag & drop video, or click to select"}</Typography>
                 </Box>
                 {file && (
                   <Box sx={{ mt: 2, p: 1.5, bgcolor: '#FFFFFF', border: '1px solid #E6E1D6' }}>
-                    <Typography variant="caption" sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span>NAME:</span> <strong>{file.name}</strong>
-                    </Typography>
-                    <Typography variant="caption" sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span>SIZE:</span> <strong>{(file.size / (1024 * 1024)).toFixed(2)} MB</strong>
-                    </Typography>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}><Typography variant="caption" color="textSecondary">NAME:</Typography><Typography variant="caption" fontWeight="bold">{file.name}</Typography></Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}><Typography variant="caption" color="textSecondary">SIZE:</Typography><Typography variant="caption" fontWeight="bold">{(file.size/(1024*1024)).toFixed(2)} MB</Typography></Box>
                   </Box>
                 )}
               </Paper>
 
               <Paper sx={{ p: 3, bgcolor: '#FDFCFB' }}>
-                <Typography variant="subtitle2" gutterBottom color="textSecondary">[02] AI_ENGINE_CONFIG</Typography>
+                <Typography variant="subtitle2" gutterBottom color="textSecondary">[02] AI_PIPELINE_CONFIG</Typography>
                 
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1 }}>
-                    <BrainIcon sx={{ fontSize: 16, mr: 0.5 }} /> SAM_MODEL_SELECTION
+                    <BrainIcon sx={{ fontSize: 16, mr: 0.5 }} /> ENGINE: SAM_MODEL
                   </Typography>
                   <FormControl fullWidth size="small">
                     <Select value={samModel} onChange={(e) => handleSamModelChange(e.target.value)} disabled={isModelLoading}>
@@ -290,18 +286,35 @@ function App() {
                 </Box>
 
                 <Box sx={{ mb: 3 }}>
-                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>--- OUTPUT_DIR ---</Typography>
-                  <Box sx={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
-                    {directories ? <SimpleTreeView onSelectedItemsChange={(_, id) => setOutputPath(id as string)} selectedItems={outputPath}>{renderTree(directories)}</SimpleTreeView> : <CircularProgress size={20} />}
-                  </Box>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>--- PRESETS ---</Typography>
+                  <FormControl fullWidth size="small">
+                    <Select value={preset} onChange={(e) => applyPreset(e.target.value as keyof typeof PRESETS)} displayEmpty>
+                      <MenuItem value="" disabled>Select Pipeline Preset</MenuItem>
+                      {Object.entries(PRESETS).map(([key, p]) => (
+                        <MenuItem key={key} value={key}><Box><Typography variant="body2" fontWeight="bold">{key}</Typography><Typography variant="caption" color="textSecondary">{p.label}</Typography></Box></MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
                 </Box>
 
                 <Box sx={{ mb: 3 }}>
-                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>--- PIPELINE_PARAMS ---</Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1 }}>--- OUTPUT_DIR --- <IconButton size="small" onClick={fetchDirectories} sx={{ ml: 1 }}><RefreshIcon sx={{ fontSize: 14 }} /></IconButton></Typography>
+                  <Box sx={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
+                    {directories ? <SimpleTreeView onSelectedItemsChange={(_, id) => setOutputPath(id as string)} selectedItems={outputPath}>{renderTree(directories)}</SimpleTreeView> : <CircularProgress size={20} />}
+                  </Box>
+                  <TextField fullWidth label="Path" value={outputPath} size="small" variant="filled" slotProps={{ input: { readOnly: true } }} />
+                </Box>
+
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>--- PARAMS ---</Typography>
                   <Grid container spacing={1}>
                     <Grid item xs={6}><TextField fullWidth label="FPS" type="number" value={fps} onChange={(e) => setFps(Number(e.target.value))} size="small" /></Grid>
                     <Grid item xs={6}><TextField fullWidth label="Thres" type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} size="small" /></Grid>
                   </Grid>
+                  <Slider value={threshold} onChange={(_, v) => setThreshold(v as number)} min={0} max={500} step={5} sx={{ mt: 1 }} />
+                  <Typography variant="caption" sx={{ bgcolor: '#F4F1EA', p: 0.5, display: 'block', fontWeight: 'bold', borderRadius: 0.5 }}>
+                    GUIDE: {threshold < 50 ? "Lenient" : threshold < 150 ? "Moderate" : "Strict"}
+                  </Typography>
                 </Box>
                 
                 <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing || isModelLoading}>
@@ -310,11 +323,11 @@ function App() {
               </Paper>
             </Grid>
 
-            {/* Main Content Area */}
+            {/* Main Area Column */}
             <Grid item xs={12} md={8}>
               <Paper sx={{ p: 3, minHeight: '85vh', borderLeft: '4px solid #4A4238' }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
-                  <Typography variant="subtitle2" color="textSecondary">[03] OUTPUT_BUFFER</Typography>
+                  <Typography variant="subtitle2" color="textSecondary">[03] BUFFER</Typography>
                   {analyticsData && (
                     <Box sx={{ display: 'flex', gap: 1 }}>
                       <Chip label={`SHARP: ${analyticsData.sharpCount}`} size="small" color="success" />
@@ -324,16 +337,11 @@ function App() {
                 </Box>
 
                 {processing && (
-                  <Box sx={{ mb: 3 }}>
-                    <Typography variant="caption" sx={{ fontWeight: 'bold' }}>{progressMsg}</Typography>
-                    <LinearProgress variant="determinate" value={Math.min((currentProgress / (totalEstimated || 1)) * 100, 100)} sx={{ height: 10, borderRadius: 1 }} />
-                  </Box>
+                  <Box sx={{ mb: 3 }}><Typography variant="caption" sx={{ fontWeight: 'bold' }}>{progressMsg}</Typography><LinearProgress variant="determinate" value={Math.min((currentProgress / (totalEstimated || 1)) * 100, 100)} sx={{ height: 8, borderRadius: 1 }} /></Box>
                 )}
 
                 <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} sx={{ mb: 2 }}>
-                  <Tab label="ALL" />
-                  <Tab label="SHARP" />
-                  <Tab label="BLUR" />
+                  <Tab label="ALL" /><Tab label="SHARP" /><Tab label="BLUR" />
                 </Tabs>
 
                 <Grid container spacing={1}>
@@ -342,17 +350,11 @@ function App() {
                       <Grid item xs={4} sm={3} md={2} key={index}>
                         <Card variant="outlined" onClick={() => handleImageClick(res)} sx={{ cursor: 'pointer', opacity: (res.score < threshold) ? 0.6 : 1, '&:hover': { borderColor: 'primary.main' } }}>
                           <CardMedia component="img" height="80" image={`${API_BASE_URL}${res.url}`} sx={{ filter: (res.score < threshold) ? 'grayscale(80%)' : 'none' }} />
-                          <Box sx={{ p: 0.5, textAlign: 'center' }}>
-                            <Typography variant="caption" sx={{ fontSize: '9px', fontWeight: 'bold' }}>S:{res.score}</Typography>
-                          </Box>
                         </Card>
                       </Grid>
                     ))
                   ) : (
-                    <Box sx={{ width: '100%', textAlign: 'center', py: 10, opacity: 0.2 }}>
-                      <MagicIcon sx={{ fontSize: 64 }} />
-                      <Typography>Waiting for results...</Typography>
-                    </Box>
+                    <Box sx={{ width: '100%', textAlign: 'center', py: 10, opacity: 0.2 }}><MagicIcon sx={{ fontSize: 64 }} /><Typography>Waiting for results...</Typography></Box>
                   )}
                 </Grid>
               </Paper>
@@ -361,47 +363,29 @@ function App() {
         </Container>
       </Box>
 
+      {/* New Folder Dialog */}
+      <Dialog open={isDialogOpen} onClose={() => setIsDialogOpen(false)}>
+        <DialogTitle sx={{ fontSize: '14px', fontWeight: 'bold' }}>CREATE_NEW_FOLDER</DialogTitle>
+        <DialogContent><TextField autoFocus margin="dense" label="Folder Name" fullWidth size="small" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} /></DialogContent>
+        <DialogActions><Button onClick={() => setIsDialogOpen(false)}>CANCEL</Button><Button onClick={handleCreateFolder} variant="contained">CREATE</Button></DialogActions>
+      </Dialog>
+
       {/* Masking Editor Dialog */}
       <Dialog open={isMaskEditorOpen} onClose={() => setIsMaskEditorOpen(false)} maxWidth="lg" fullWidth>
-        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          AI MASKING EDITOR (SAM)
-          <Box>
-            <Button size="small" startIcon={<ClearIcon />} onClick={() => setPoints([])}>Reset</Button>
-            <IconButton onClick={() => setIsMaskEditorOpen(false)}><ClearIcon /></IconButton>
-          </Box>
-        </DialogTitle>
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>AI MASKING EDITOR (SAM) <Box><Button size="small" startIcon={<ClearIcon />} onClick={() => setPoints([])}>Reset</Button><IconButton onClick={() => setIsMaskEditorOpen(false)}><ClearIcon /></IconButton></Box></DialogTitle>
         <DialogContent>
           <Box sx={{ position: 'relative', textAlign: 'center', bgcolor: '#000', borderRadius: 1, overflow: 'hidden' }}>
             {editingImage && (
               <>
-                <img
-                  ref={imgRef}
-                  src={`${API_BASE_URL}${editingImage.url}`}
-                  style={{ maxWidth: '100%', display: 'block', margin: '0 auto', cursor: 'crosshair' }}
-                  onClick={handleCanvasClick}
-                />
-                {maskUrl && (
-                  <img
-                    src={maskUrl}
-                    style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: imgRef.current?.clientWidth, height: imgRef.current?.clientHeight, pointerEvents: 'none', opacity: 0.6 }}
-                  />
-                )}
-                {points.map((p, i) => (
-                  <Box key={i} sx={{ position: 'absolute', left: `${(p[0] / (metadata?.width || 1)) * (imgRef.current?.clientWidth || 1)}px`, top: `${(p[1] / (metadata?.height || 1)) * (imgRef.current?.clientHeight || 1)}px`, width: 8, height: 8, bgcolor: 'blue', borderRadius: '50%', transform: 'translate(-50%, -50%)', pointerEvents: 'none', border: '2px solid white' }} />
-                ))}
+                <img ref={imgRef} src={`${API_BASE_URL}${editingImage.url}`} style={{ maxWidth: '100%', display: 'block', margin: '0 auto', cursor: 'crosshair' }} onClick={handleCanvasClick} />
+                {maskUrl && <img src={maskUrl} style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: imgRef.current?.clientWidth, height: imgRef.current?.clientHeight, pointerEvents: 'none', opacity: 0.6 }} />}
+                {points.map((p, i) => <Box key={i} sx={{ position: 'absolute', left: `${(p[0] / (metadata?.width || 1)) * (imgRef.current?.clientWidth || 1)}px`, top: `${(p[1] / (metadata?.height || 1)) * (imgRef.current?.clientHeight || 1)}px`, width: 8, height: 8, bgcolor: 'blue', borderRadius: '50%', transform: 'translate(-50%, -50%)', pointerEvents: 'none', border: '2px solid white' }} />)}
               </>
             )}
-            {isSegmenting && (
-              <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, bgcolor: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <CircularProgress color="inherit" />
-              </Box>
-            )}
+            {isSegmenting && <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, bgcolor: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><CircularProgress color="inherit" /></Box>}
           </Box>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setIsMaskEditorOpen(false)}>Close</Button>
-          <Button variant="contained" color="success">Download Masked Image</Button>
-        </DialogActions>
+        <DialogActions><Button onClick={() => setIsMaskEditorOpen(false)}>Close</Button><Button variant="contained" color="success">Download Masked Image</Button></DialogActions>
       </Dialog>
     </ThemeProvider>
   );
