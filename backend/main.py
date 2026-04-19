@@ -47,21 +47,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# High-stability Mirror URLs (Hugging Face)
 MODEL_CONFIGS = {
     "vit_b": {
         "checkpoint": "sam_vit_b_01ec10.pth",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec10.pth",
-        "min_size": 300 * 1024 * 1024 # 300MB
+        "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/checkpoints/sam_vit_b_01ec10.pth"
     },
     "vit_l": {
         "checkpoint": "sam_vit_l_0b31ee.pth",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b31ee.pth",
-        "min_size": 1000 * 1024 * 1024 # 1GB
+        "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/checkpoints/sam_vit_l_0b31ee.pth"
     },
     "vit_h": {
         "checkpoint": "sam_vit_h_4b8939.pth",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
-        "min_size": 2000 * 1024 * 1024 # 2GB
+        "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/checkpoints/sam_vit_h_4b8939.pth"
     }
 }
 
@@ -72,49 +70,58 @@ predictor = None
 def download_model(model_type):
     config = MODEL_CONFIGS[model_type]
     checkpoint = config["checkpoint"]
+    url = config["url"]
     
-    # Check if exists and is NOT a tiny error file
-    if os.path.exists(checkpoint):
-        if os.path.getsize(checkpoint) > 1024 * 1024: # Must be at least 1MB
-            return True
-        else:
-            print(f"Corrupted model file detected ({checkpoint}). Deleting...")
-            os.remove(checkpoint)
+    if os.path.exists(checkpoint) and os.path.getsize(checkpoint) > 100 * 1024 * 1024:
+        return True
 
-    print(f"Downloading {model_type} model ({checkpoint}). This might take a while...")
-    headers = {"User-Agent": "Mozilla/5.0"}
+    print(f"--- SAM MODEL DOWNLOAD START ({model_type}) ---")
+    print(f"Source: {url}")
+    
+    # Try system curl first (most robust on Mac)
     try:
-        response = requests.get(config["url"], stream=True, headers=headers)
-        response.raise_for_status()
-        with open(checkpoint, "wb") as f:
-            for chunk in response.iter_content(chunk_size=1024*1024): # 1MB chunks
-                if chunk: f.write(chunk)
-        print("Download complete.")
+        print("Executing system curl download...")
+        subprocess.run(["curl", "-L", url, "-o", checkpoint], check=True)
+        if os.path.exists(checkpoint) and os.path.getsize(checkpoint) > 100 * 1024 * 1024:
+            print("Download successful via curl.")
+            return True
+    except Exception as e:
+        print(f"Curl failed, falling back to requests: {e}")
+
+    # Fallback to requests with browser headers
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+        with requests.get(url, stream=True, headers=headers) as r:
+            r.raise_for_status()
+            with open(checkpoint, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024*1024):
+                    f.write(chunk)
+        print("Download successful via requests.")
         return True
     except Exception as e:
-        print(f"Download failed: {e}")
+        print(f"CRITICAL ERROR: All download methods failed for {model_type}.")
+        print(f"Error detail: {e}")
+        print(f"PLEASE MANUALLY DOWNLOAD FROM: {url} AND PLACE IN backend/ FOLDER.")
         return False
 
 def load_sam_model(model_type):
     global predictor, current_model_type
     try:
-        if not download_model(model_type):
-            print(f"Skipping load due to download failure.")
-            return False
-            
+        if not download_model(model_type): return False
         if predictor is not None:
             del predictor
             if torch.cuda.is_available(): torch.cuda.empty_cache()
             
-        print(f"Loading SAM {model_type} on {DEVICE}...")
+        print(f"Loading SAM {model_type} into memory ({DEVICE})...")
         sam = sam_model_registry[model_type](checkpoint=MODEL_CONFIGS[model_type]["checkpoint"])
         sam.to(device=DEVICE)
         predictor = SamPredictor(sam)
         current_model_type = model_type
-        print(f"SAM {model_type} loaded successfully.")
+        print(f"SUCCESS: SAM {model_type} is now active.")
         return True
     except Exception as e:
-        print(f"Load Error: {e}")
+        print(f"LOAD ERROR: {e}")
+        traceback.print_exc()
         return False
 
 @app.on_event("startup")
@@ -123,14 +130,15 @@ async def startup_event():
 
 @app.get("/health")
 async def health_check(): 
-    return {"status": "ok", "version": "3.3.8", "device": DEVICE, "model": current_model_type}
+    return {"status": "ok", "version": "3.3.9", "device": DEVICE, "model": current_model_type}
 
 @app.post("/change-model/{model_type}")
 async def change_model(model_type: str):
     if model_type not in MODEL_CONFIGS: raise HTTPException(status_code=400, detail="Invalid model")
     if load_sam_model(model_type): return {"status": "success", "model": model_type}
-    raise HTTPException(status_code=500, detail="Model load failed. Check server logs.")
+    raise HTTPException(status_code=500, detail="Model switch failed. See server logs.")
 
+# --- Remaining Core Logic (Directories, Upload, Process, Segment, Sync) ---
 @app.get("/directories")
 async def list_directories():
     def get_dir_structure(root_path):
@@ -201,11 +209,10 @@ async def websocket_process(websocket: WebSocket, file_id: str):
         for i, f in enumerate(raw_files):
             img = cv2.imread(os.path.join(temp_dir, f))
             var = cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-            is_blur = var < threshold
-            target = blur_dir if is_blur else sharp_dir
+            target = blur_dir if var < threshold else sharp_dir
             shutil.move(os.path.join(temp_dir, f), os.path.join(target, f))
             preview_url = f"/images/{os.path.relpath(os.path.join(target, f), os.path.abspath(OUTPUT_DIR))}"
-            results.append({"filename": f, "url": preview_url, "score": round(var, 2), "is_blurry": bool(is_blur), "full_path": os.path.join(target, f)})
+            results.append({"filename": f, "url": preview_url, "score": round(var, 2), "is_blurry": bool(var < threshold), "full_path": os.path.join(target, f)})
             if i % 5 == 0: await websocket.send_json({"type": "progress", "current": i+1, "total": len(raw_files), "message": f"SORTING: {i+1}/{len(raw_files)}"})
         shutil.rmtree(temp_dir)
         await websocket.send_json({"type": "complete", "results": results, "output_dir": base_output_dir})

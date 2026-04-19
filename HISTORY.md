@@ -1,5 +1,11 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.9
+- **Fixed:** Persistent model download 403 Forbidden errors by switching to stable Hugging Face mirrors.
+- **Improved:** Download reliability using system `curl -L` as the primary transfer method on macOS.
+- **Improved:** Automated download verification ensuring model files are fully transferred before loading.
+- **Updated:** Versioning to V3.3.9.
+
 ## [2026-04-16] Update V3.3.8
 - **Fixed:** `invalid load key, '<'` error by improving the model download logic. Tiny error/HTML files are now detected and deleted automatically.
 - **Improved:** Added User-Agent headers and download verification to ensure model weights are downloaded correctly from Meta's servers.
