@@ -96,8 +96,9 @@ function App() {
   const [metadata, setMetadata] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [results, setResults] = useState<ProcessResult[]>([]);
-  const [outputPath, setOutputPath] = useState('');
+  const [serverOutputDir, setServerOutputDir] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const [samModel, setSamModel] = useState('vit_b');
@@ -105,6 +106,8 @@ function App() {
   const [preset, setPreset] = useState('');
   const [fps, setFps] = useState(1);
   const [threshold, setThreshold] = useState(100);
+  const [outputPath, setOutputPath] = useState('');
+
   const [progressMsg, setProgressMsg] = useState('');
   const [currentProgress, setCurrentProgress] = useState(0);
   const [totalEstimated, setTotalEstimated] = useState(0);
@@ -181,7 +184,7 @@ function App() {
 
   const handleProcess = () => {
     if (!fileId) return;
-    setProcessing(true); setResults([]); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
+    setProcessing(true); setResults([]); setServerOutputDir(''); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
     const ws = new WebSocket(`${WS_BASE_URL}/ws/process/${fileId}`);
     ws.onopen = () => ws.send(JSON.stringify({ fps, threshold, output_path: outputPath }));
     ws.onmessage = (event) => {
@@ -190,11 +193,21 @@ function App() {
         setProgressMsg(data.message);
         if (data.current) setCurrentProgress(data.current);
       } else if (data.type === 'complete') {
-        setResults(data.results); setProcessing(false); fetchDirectories(); ws.close();
+        setResults(data.results); setServerOutputDir(data.output_dir); setProcessing(false); fetchDirectories(); ws.close();
       } else if (data.type === 'error') {
         setError(`PROCESS_ERROR: ${data.message}`); setProcessing(false); ws.close();
       }
     };
+  };
+
+  const handleSyncFolders = async () => {
+    if (!serverOutputDir || results.length === 0) return;
+    setSyncing(true);
+    try {
+      await axios.post(`${API_BASE_URL}/sync-folders`, { output_dir: serverOutputDir, threshold, results });
+      fetchDirectories();
+      alert('Folders synchronized!');
+    } catch (err: any) { setError(`SYNC_ERROR: ${err.message}`); } finally { setSyncing(false); }
   };
 
   const handleImageClick = (res: ProcessResult) => {
@@ -219,7 +232,9 @@ function App() {
     if (results.length === 0) return null;
     const sharp = results.filter(r => r.score >= threshold);
     const blur = results.filter(r => r.score < threshold);
-    return { sharpCount: sharp.length, blurCount: blur.length };
+    const avgAll = results.reduce((acc, curr) => acc + curr.score, 0) / results.length;
+    const avgSharp = sharp.length > 0 ? sharp.reduce((acc, curr) => acc + curr.score, 0) / sharp.length : 0;
+    return { sharpCount: sharp.length, blurCount: blur.length, avgAll: parseFloat(avgAll.toFixed(2)), avgSharp: parseFloat(avgSharp.toFixed(2)) };
   }, [results, threshold]);
 
   const filteredResults = useMemo(() => {
@@ -245,14 +260,15 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V3.2.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V3.3.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
+            {metadata && <Typography variant="caption" color="success.main">● ENGINE_READY</Typography>}
           </Toolbar>
         </AppBar>
 
         <Container maxWidth="xl">
           <Grid container spacing={3}>
-            {/* Sidebar Column */}
+            {/* Left Column: Input & Config */}
             <Grid item xs={12} md={4}>
               <Paper sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB' }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary">[01] INPUT_SOURCE</Typography>
@@ -261,20 +277,33 @@ function App() {
                   <Typography variant="body2">{isDragActive ? "Drop video here..." : "Drag & drop video, or click to select"}</Typography>
                 </Box>
                 {file && (
-                  <Box sx={{ mt: 2, p: 1.5, bgcolor: '#FFFFFF', border: '1px solid #E6E1D6' }}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}><Typography variant="caption" color="textSecondary">NAME:</Typography><Typography variant="caption" fontWeight="bold">{file.name}</Typography></Box>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}><Typography variant="caption" color="textSecondary">SIZE:</Typography><Typography variant="caption" fontWeight="bold">{(file.size/(1024*1024)).toFixed(2)} MB</Typography></Box>
+                  <Box sx={{ mt: 3, p: 2, bgcolor: '#FFFFFF', border: '1px solid #E6E1D6' }}>
+                    <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', mb: 1.5, fontWeight: 'bold' }}><MovieIcon sx={{ mr: 1, fontSize: 18 }} /> [DATA_SUMMARY]</Typography>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.8 }}>
+                      {[
+                        { label: 'FILE_NAME', value: file.name },
+                        { label: 'FILE_SIZE', value: `${(file.size / (1024 * 1024)).toFixed(2)} MB` },
+                        ...(metadata ? [
+                          { label: 'RESOLUTION', value: `${metadata.width} x ${metadata.height}` },
+                          { label: 'VIDEO_FPS', value: metadata.avg_frame_rate },
+                          { label: 'LENGTH', value: `${metadata.duration.toFixed(2)}s` },
+                          { label: 'ASPECT_RATIO', value: `${(metadata.width / metadata.height).toFixed(2)}:1` }
+                        ] : [])
+                      ].map((item, idx) => (
+                        <Box key={idx} sx={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #F0EDE5', pb: 0.5 }}>
+                          <Typography variant="caption" color="textSecondary" sx={{ fontWeight: 'bold' }}>{item.label}:</Typography>
+                          <Typography variant="caption" sx={{ color: 'primary.main', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.value}</Typography>
+                        </Box>
+                      ))}
+                    </Box>
                   </Box>
                 )}
               </Paper>
 
               <Paper sx={{ p: 3, bgcolor: '#FDFCFB' }}>
-                <Typography variant="subtitle2" gutterBottom color="textSecondary">[02] AI_PIPELINE_CONFIG</Typography>
-                
+                <Typography variant="subtitle2" gutterBottom color="textSecondary">[02] PIPELINE_CONFIGURATION</Typography>
                 <Box sx={{ mb: 3 }}>
-                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1 }}>
-                    <BrainIcon sx={{ fontSize: 16, mr: 0.5 }} /> ENGINE: SAM_MODEL
-                  </Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1 }}><BrainIcon sx={{ fontSize: 16, mr: 0.5 }} /> ENGINE: SAM_MODEL</Typography>
                   <FormControl fullWidth size="small">
                     <Select value={samModel} onChange={(e) => handleSamModelChange(e.target.value)} disabled={isModelLoading}>
                       <MenuItem value="vit_b">ViT-B (Base / Fastest)</MenuItem>
@@ -284,7 +313,6 @@ function App() {
                   </FormControl>
                   {isModelLoading && <LinearProgress sx={{ mt: 1 }} />}
                 </Box>
-
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>--- PRESETS ---</Typography>
                   <FormControl fullWidth size="small">
@@ -296,7 +324,6 @@ function App() {
                     </Select>
                   </FormControl>
                 </Box>
-
                 <Box sx={{ mb: 3 }}>
                   <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1 }}>--- OUTPUT_DIR --- <IconButton size="small" onClick={fetchDirectories} sx={{ ml: 1 }}><RefreshIcon sx={{ fontSize: 14 }} /></IconButton></Typography>
                   <Box sx={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid #E6E1D6', p: 1, mb: 1, bgcolor: '#FFFFFF' }}>
@@ -304,58 +331,97 @@ function App() {
                   </Box>
                   <TextField fullWidth label="Path" value={outputPath} size="small" variant="filled" slotProps={{ input: { readOnly: true } }} />
                 </Box>
-
                 <Box sx={{ mb: 3 }}>
-                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>--- PARAMS ---</Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>--- EXTRACTION_PARAMS ---</Typography>
                   <Grid container spacing={1}>
                     <Grid item xs={6}><TextField fullWidth label="FPS" type="number" value={fps} onChange={(e) => setFps(Number(e.target.value))} size="small" /></Grid>
-                    <Grid item xs={6}><TextField fullWidth label="Thres" type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} size="small" /></Grid>
+                    <Grid item xs={6}><TextField fullWidth label="Threshold" type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} size="small" /></Grid>
                   </Grid>
                   <Slider value={threshold} onChange={(_, v) => setThreshold(v as number)} min={0} max={500} step={5} sx={{ mt: 1 }} />
                   <Typography variant="caption" sx={{ bgcolor: '#F4F1EA', p: 0.5, display: 'block', fontWeight: 'bold', borderRadius: 0.5 }}>
-                    GUIDE: {threshold < 50 ? "Lenient" : threshold < 150 ? "Moderate" : "Strict"}
+                    GUIDE: {threshold < 50 ? "Lenient (Blurry ok)" : threshold < 150 ? "Moderate (Standard)" : "Strict (Sharp only)"}
                   </Typography>
                 </Box>
-                
-                <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing || isModelLoading}>
+                <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238', mb: 2 }} onClick={handleProcess} disabled={!fileId || processing || isModelLoading}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'START_PIPELINE'}
                 </Button>
+                {results.length > 0 && (
+                  <Button fullWidth variant="outlined" startIcon={syncing ? <CircularProgress size={16}/> : <SyncIcon />} onClick={handleSyncFolders} disabled={syncing}>
+                    {syncing ? 'SYNCING...' : 'APPLY & SYNC FOLDERS'}
+                  </Button>
+                )}
               </Paper>
             </Grid>
 
-            {/* Main Area Column */}
+            {/* Main Content Area */}
             <Grid item xs={12} md={8}>
               <Paper sx={{ p: 3, minHeight: '85vh', borderLeft: '4px solid #4A4238' }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
-                  <Typography variant="subtitle2" color="textSecondary">[03] BUFFER</Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+                  <Typography variant="subtitle2" color="textSecondary">[03] BUFFER & ANALYTICS</Typography>
                   {analyticsData && (
-                    <Box sx={{ display: 'flex', gap: 1 }}>
-                      <Chip label={`SHARP: ${analyticsData.sharpCount}`} size="small" color="success" />
-                      <Chip label={`BLUR: ${analyticsData.blurCount}`} size="small" color="error" />
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                      <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>COUNT_RATIO</Typography>
+                        <ResponsiveContainer width="100%" height="85%">
+                          <BarChart data={[{label:'Sharp',val:analyticsData.sharpCount},{label:'Blur',val:analyticsData.blurCount}]} layout="vertical" margin={{ left: 5, right: 40 }}>
+                            <XAxis type="number" hide />
+                            <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
+                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
+                              <Cell fill="#6B7A5F"/><Cell fill="#A65D57"/>
+                              <LabelList dataKey="val" position="right" fontSize={9} />
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Box>
+                      <Box sx={{ width: 220, height: 130, border: '1px solid #E6E1D6', p: 1, bgcolor: '#FDFCFB' }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5, fontSize: '9px' }}>QUALITY_PREVIEW (AVG)</Typography>
+                        <ResponsiveContainer width="100%" height="85%">
+                          <BarChart data={[{label:'AllAvg',val:analyticsData.avgAll},{label:'SharpAvg',val:analyticsData.avgSharp}]} layout="vertical" margin={{ left: 5, right: 40 }}>
+                            <XAxis type="number" hide />
+                            <YAxis type="category" dataKey="label" fontSize={9} tickLine={false} axisLine={false} width={45} />
+                            <Bar dataKey="val" radius={[0, 4, 4, 0]} barSize={15}>
+                              <Cell fill="#D4CBB3"/><Cell fill="#6B7A5F"/>
+                              <LabelList dataKey="val" position="right" fontSize={9} />
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Box>
                     </Box>
                   )}
                 </Box>
 
+                {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
                 {processing && (
-                  <Box sx={{ mb: 3 }}><Typography variant="caption" sx={{ fontWeight: 'bold' }}>{progressMsg}</Typography><LinearProgress variant="determinate" value={Math.min((currentProgress / (totalEstimated || 1)) * 100, 100)} sx={{ height: 8, borderRadius: 1 }} /></Box>
+                  <Box sx={{ mb: 3, p: 2, bgcolor: '#FDFCFB', border: '1px solid #E6E1D6' }}>
+                    <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 'bold' }}>{progressMsg}</Typography>
+                    <LinearProgress variant="determinate" value={Math.min((currentProgress / (totalEstimated || 1)) * 100, 100)} sx={{ height: 10, borderRadius: 1 }} />
+                  </Box>
                 )}
 
-                <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} sx={{ mb: 2 }}>
-                  <Tab label="ALL" /><Tab label="SHARP" /><Tab label="BLUR" />
-                </Tabs>
+                <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+                  <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} textColor="primary" indicatorColor="primary">
+                    <Tab label={`ALL (${results.length})`} sx={{ fontSize: '11px' }} />
+                    <Tab label={`SHARP (${analyticsData?.sharpCount || 0})`} sx={{ fontSize: '11px' }} />
+                    <Tab label={`BLUR (${analyticsData?.blurCount || 0})`} sx={{ fontSize: '11px' }} />
+                  </Tabs>
+                </Box>
 
-                <Grid container spacing={1}>
+                <Grid container spacing={1.5}>
                   {results.length > 0 ? (
                     filteredResults.map((res, index) => (
-                      <Grid item xs={4} sm={3} md={2} key={index}>
+                      <Grid item xs={6} sm={4} md={3} lg={2.4} key={index}>
                         <Card variant="outlined" onClick={() => handleImageClick(res)} sx={{ cursor: 'pointer', opacity: (res.score < threshold) ? 0.6 : 1, '&:hover': { borderColor: 'primary.main' } }}>
-                          <CardMedia component="img" height="80" image={`${API_BASE_URL}${res.url}`} sx={{ filter: (res.score < threshold) ? 'grayscale(80%)' : 'none' }} />
+                          <CardMedia component="img" height="100" image={`${API_BASE_URL}${res.url}`} sx={{ filter: (res.score < threshold) ? 'grayscale(80%)' : 'none' }} />
+                          <CardContent sx={{ p: 0.8 }}>
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Typography variant="caption" sx={{ fontSize: '9px', fontWeight: 'bold' }}>S:{res.score}</Typography>
+                              <Chip label={(res.score < threshold) ? 'B' : 'S'} size="small" color={(res.score < threshold) ? 'error' : 'success'} sx={{ height: 12, fontSize: '7px', minWidth: 16 }} />
+                            </Box>
+                          </CardContent>
                         </Card>
                       </Grid>
                     ))
-                  ) : (
-                    <Box sx={{ width: '100%', textAlign: 'center', py: 10, opacity: 0.2 }}><MagicIcon sx={{ fontSize: 64 }} /><Typography>Waiting for results...</Typography></Box>
-                  )}
+                  ) : !processing && <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '400px', opacity: 0.2 }}><ImageIcon sx={{ fontSize: 64 }} /></Box>}
                 </Grid>
               </Paper>
             </Grid>

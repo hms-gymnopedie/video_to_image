@@ -1,5 +1,11 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.0
+- **Restored:** Full video metadata summary (Resolution, FPS, Length, Aspect Ratio) after upload.
+- **Restored:** Interactive folder management and application presets.
+- **Improved:** Integrated AI Masking workflow with all legacy preprocessing tools.
+- **Updated:** Versioning to V3.3.0.
+
 ## [2026-04-16] Update V3.2.0
 - **Restored:** Missing UI features from previous AI update, including Folder Browser controls (Refresh/New Folder).
 - **Restored:** Application Presets (3DGS, 2DGS, COLMAP) for quick pipeline configuration.
