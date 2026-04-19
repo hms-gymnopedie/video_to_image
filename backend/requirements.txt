@@ -4,3 +4,7 @@ python-multipart
 opencv-python
 ffmpeg-python
 websockets
+requests
+torch
+torchvision
+segment-anything

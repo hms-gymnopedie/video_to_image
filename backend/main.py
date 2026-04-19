@@ -92,7 +92,7 @@ async def change_model(model_type: str):
 
 @app.get("/health")
 async def health_check(): 
-    return {"status": "ok", "version": "3.3.1", "device": DEVICE, "current_model": current_model_type}
+    return {"status": "ok", "version": "3.3.2", "device": DEVICE, "current_model": current_model_type}
 
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"

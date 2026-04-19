@@ -1,5 +1,10 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.2
+- **Fixed:** `ModuleNotFoundError: No module named 'requests'` by adding the library to the virtual environment and updating `requirements.txt`.
+- **Improved:** Standardized project dependencies for robust setup on new environments.
+- **Updated:** Versioning to V3.3.2.
+
 ## [2026-04-16] Update V3.3.1
 - **Fixed:** 404 error when creating a new folder by restoring the missing `/create-directory` endpoint in the backend.
 - **Improved:** Code consistency and endpoint organization in `main.py`.
