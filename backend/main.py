@@ -21,7 +21,7 @@ import ffmpeg
 import torch
 from segment_anything import sam_model_registry, SamPredictor
 
-# Ensure essential directories exist
+# --- Directories Setup ---
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "output"
 MASK_DIR = "masks"
@@ -35,8 +35,8 @@ def patched_torch_load(*args, **kwargs):
     if 'weights_only' not in kwargs: kwargs['weights_only'] = False
     return original_torch_load(*args, **kwargs)
 torch.load = patched_torch_load
-# -------------------------------------
 
+# --- FastAPI App ---
 app = FastAPI()
 
 app.add_middleware(
@@ -47,19 +47,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# High-stability Mirror URLs (Hugging Face)
+# --- SAM Model Configs ---
 MODEL_CONFIGS = {
     "vit_b": {
         "checkpoint": "sam_vit_b_01ec10.pth",
-        "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/checkpoints/sam_vit_b_01ec10.pth"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec10.pth"
     },
     "vit_l": {
         "checkpoint": "sam_vit_l_0b31ee.pth",
-        "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/checkpoints/sam_vit_l_0b31ee.pth"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b31ee.pth"
     },
     "vit_h": {
         "checkpoint": "sam_vit_h_4b8939.pth",
-        "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/checkpoints/sam_vit_h_4b8939.pth"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
     }
 }
 
@@ -72,36 +72,59 @@ def download_model(model_type):
     checkpoint = config["checkpoint"]
     url = config["url"]
     
-    if os.path.exists(checkpoint) and os.path.getsize(checkpoint) > 100 * 1024 * 1024:
-        return True
+    # Check existing file (must be > 100MB to be valid)
+    if os.path.exists(checkpoint):
+        if os.path.getsize(checkpoint) > 100 * 1024 * 1024:
+            return True
+        else:
+            print(f"Invalid small file detected for {checkpoint}. Deleting...")
+            os.remove(checkpoint)
 
-    print(f"--- SAM MODEL DOWNLOAD START ({model_type}) ---")
-    print(f"Source: {url}")
+    print(f"\n--- SAM MODEL DOWNLOAD INITIATED ({model_type}) ---")
+    print(f"Target: {checkpoint}")
     
-    # Try system curl first (most robust on Mac)
+    # Method 1: curl with User-Agent and Referer (Best for Meta servers)
     try:
-        print("Executing system curl download...")
-        subprocess.run(["curl", "-L", url, "-o", checkpoint], check=True)
+        print("Trying download via system curl...")
+        cmd = [
+            "curl", "-L", "-C", "-", 
+            "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "-H", "Referer: https://segment-anything.com/",
+            url, "-o", checkpoint
+        ]
+        subprocess.run(cmd, check=True)
+        
         if os.path.exists(checkpoint) and os.path.getsize(checkpoint) > 100 * 1024 * 1024:
-            print("Download successful via curl.")
+            print(f"SUCCESS: {checkpoint} downloaded via curl.")
             return True
     except Exception as e:
-        print(f"Curl failed, falling back to requests: {e}")
+        print(f"Curl failed: {e}")
 
-    # Fallback to requests with browser headers
+    # Method 2: Python requests as fallback
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+        print("Falling back to Python requests...")
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://segment-anything.com/"
+        }
         with requests.get(url, stream=True, headers=headers) as r:
             r.raise_for_status()
             with open(checkpoint, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=1024*1024):
-                    f.write(chunk)
-        print("Download successful via requests.")
-        return True
+                    if chunk: f.write(chunk)
+        
+        if os.path.exists(checkpoint) and os.path.getsize(checkpoint) > 100 * 1024 * 1024:
+            print(f"SUCCESS: {checkpoint} downloaded via requests.")
+            return True
     except Exception as e:
-        print(f"CRITICAL ERROR: All download methods failed for {model_type}.")
-        print(f"Error detail: {e}")
-        print(f"PLEASE MANUALLY DOWNLOAD FROM: {url} AND PLACE IN backend/ FOLDER.")
+        print(f"\n[CRITICAL ERROR] Download failed for {model_type}.")
+        print(f"Error: {e}")
+        print("="*60)
+        print("PLEASE MANUALLY DOWNLOAD THE MODEL TO CONTINUE:")
+        print(f"1. Open in Browser: {url}")
+        print(f"2. Save the file as: {os.path.join(os.getcwd(), checkpoint)}")
+        print("3. Restart the server.")
+        print("="*60)
         return False
 
 def load_sam_model(model_type):
@@ -121,7 +144,6 @@ def load_sam_model(model_type):
         return True
     except Exception as e:
         print(f"LOAD ERROR: {e}")
-        traceback.print_exc()
         return False
 
 @app.on_event("startup")
@@ -130,15 +152,15 @@ async def startup_event():
 
 @app.get("/health")
 async def health_check(): 
-    return {"status": "ok", "version": "3.3.9", "device": DEVICE, "model": current_model_type}
+    return {"status": "ok", "version": "3.4.0", "device": DEVICE, "model": current_model_type}
 
 @app.post("/change-model/{model_type}")
 async def change_model(model_type: str):
     if model_type not in MODEL_CONFIGS: raise HTTPException(status_code=400, detail="Invalid model")
     if load_sam_model(model_type): return {"status": "success", "model": model_type}
-    raise HTTPException(status_code=500, detail="Model switch failed. See server logs.")
+    raise HTTPException(status_code=500, detail="Model switch failed. Check server logs.")
 
-# --- Remaining Core Logic (Directories, Upload, Process, Segment, Sync) ---
+# --- API Endpoints ---
 @app.get("/directories")
 async def list_directories():
     def get_dir_structure(root_path):
@@ -152,13 +174,9 @@ async def list_directories():
         return d
     return get_dir_structure(os.path.abspath(OUTPUT_DIR))
 
-class CreateDirRequest(BaseModel):
-    parent_path: str
-    new_name: str
-
 @app.post("/create-directory")
-async def create_directory(data: CreateDirRequest):
-    new_path = os.path.join(data.parent_path, data.new_name)
+async def create_directory(data: dict):
+    new_path = os.path.join(data['parent_path'], data['new_name'])
     os.makedirs(new_path, exist_ok=True)
     return {"status": "success", "path": new_path}
 

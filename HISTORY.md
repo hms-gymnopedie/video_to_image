@@ -1,5 +1,11 @@
 # Project Update History
 
+## [2026-04-16] Update V3.4.0
+- **Improved:** SAM model download resilience. Implemented browser-imitation headers for `curl` and `requests` to bypass 403 Forbidden errors on Meta's public servers.
+- **Improved:** Automated model verification. Model files are now strictly checked for minimum size (100MB) to prevent corrupt/HTML downloads.
+- **Added:** Detailed manual download instructions in logs for critical failure scenarios.
+- **Updated:** Versioning to V3.4.0.
+
 ## [2026-04-16] Update V3.3.9
 - **Fixed:** Persistent model download 403 Forbidden errors by switching to stable Hugging Face mirrors.
 - **Improved:** Download reliability using system `curl -L` as the primary transfer method on macOS.
