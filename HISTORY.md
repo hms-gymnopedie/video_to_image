@@ -23,6 +23,13 @@
 - **Improved:** Backend startup resilience.
 - **Updated:** Versioning to V3.3.7.
 
+## [2026-04-16] Update V3.5.5
+- **Fixed:** Critical issue where automated model downloads were being blocked (403 Forbidden).
+- **Improved:** Switched to a manual-first/browser-download strategy for AI model weights to ensure 100% reliability.
+- **Improved:** Server now provides clear terminal instructions for manual setup if the model is missing.
+- **Improved:** Robust model verification (size-based) before loading.
+- **Updated:** Versioning to V3.5.5.
+
 ## [2026-04-16] Update V3.5.0
 - **Added:** Startup-resilient backend. The server now starts immediately even if the SAM model is missing, allowing core features (extraction, metadata) to function.
 - **Improved:** Reliable model mirror using Hugging Face.

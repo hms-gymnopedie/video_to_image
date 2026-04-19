@@ -21,7 +21,7 @@ import ffmpeg
 import torch
 from segment_anything import sam_model_registry, SamPredictor
 
-# --- Initial Setup ---
+# --- Directories Setup ---
 UPLOAD_DIR, OUTPUT_DIR, MASK_DIR = "uploads", "output", "masks"
 for d in [UPLOAD_DIR, OUTPUT_DIR, MASK_DIR]: os.makedirs(d, exist_ok=True)
 
@@ -38,9 +38,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
 
 # --- AI Engine State ---
 MODEL_CONFIGS = {
-    "vit_b": {"checkpoint": "sam_vit_b_01ec10.pth", "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/sam_vit_b_01ec10.pth"},
-    "vit_l": {"checkpoint": "sam_vit_l_0b31ee.pth", "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/sam_vit_l_0b31ee.pth"},
-    "vit_h": {"checkpoint": "sam_vit_h_4b8939.pth", "url": "https://huggingface.co/ybelkada/segment-anything/resolve/main/sam_vit_h_4b8939.pth"}
+    "vit_b": "sam_vit_b_01ec10.pth",
+    "vit_l": "sam_vit_l_0b31ee.pth",
+    "vit_h": "sam_vit_h_4b8939.pth"
 }
 
 current_model_type = "vit_b"
@@ -50,39 +50,47 @@ is_model_ready = False
 
 def load_sam_model(model_type):
     global predictor, current_model_type, is_model_ready
-    checkpoint = MODEL_CONFIGS[model_type]["checkpoint"]
+    checkpoint = MODEL_CONFIGS[model_type]
+    
+    # Validation: Must exist and be > 100MB
     if not os.path.exists(checkpoint) or os.path.getsize(checkpoint) < 100*1024*1024:
-        print(f"ERROR: Model file {checkpoint} missing or incomplete.")
+        print(f"\n[!] AI_ENGINE_OFFLINE: Model file '{checkpoint}' is missing or invalid.")
+        print(f"[!] Please manually download it and place it in the backend folder.")
         is_model_ready = False
         return False
+        
     try:
         if predictor is not None: del predictor
         if torch.cuda.is_available(): torch.cuda.empty_cache()
+        
+        print(f"Loading SAM {model_type} from {checkpoint}...")
         sam = sam_model_registry[model_type](checkpoint=checkpoint)
         sam.to(device=DEVICE)
         predictor = SamPredictor(sam)
         current_model_type, is_model_ready = model_type, True
-        print(f"SUCCESS: SAM {model_type} loaded on {DEVICE}")
+        print(f"SUCCESS: SAM {model_type} is now ONLINE.")
         return True
     except Exception as e:
-        print(f"LOAD ERROR: {e}"); is_model_ready = False; return False
+        print(f"LOAD ERROR: {e}")
+        is_model_ready = False
+        return False
 
 @app.on_event("startup")
 async def startup():
-    # Attempt load but don't block server if it fails
+    # Initial attempt to load vit_b
     asyncio.create_task(asyncio.to_thread(load_sam_model, "vit_b"))
 
 @app.get("/health")
 async def health(): 
-    return {"status": "ok", "version": "3.5.0", "ai_ready": is_model_ready, "model": current_model_type, "device": DEVICE}
+    return {"status": "ok", "version": "3.5.5", "ai_ready": is_model_ready, "model": current_model_type, "device": DEVICE}
 
 @app.post("/change-model/{model_type}")
 async def change_model(model_type: str):
-    if model_type not in MODEL_CONFIGS: raise HTTPException(status_code=400)
+    if model_type not in MODEL_CONFIGS: raise HTTPException(400)
     if load_sam_model(model_type): return {"status": "success"}
-    raise HTTPException(status_code=500, detail="Model file missing. Please download it manually.")
+    raise HTTPException(500, detail=f"Model file '{MODEL_CONFIGS[model_type]}' not found. Download it manually.")
 
-# --- Standard Logic ---
+# --- Standard Dashboard Logic ---
 @app.get("/directories")
 async def list_dirs():
     def get_struct(p):
@@ -95,6 +103,12 @@ async def list_dirs():
         return d
     return get_struct(os.path.abspath(OUTPUT_DIR))
 
+@app.post("/create-directory")
+async def create_dir(data: dict):
+    p = os.path.join(data['parent_path'], data['new_name'])
+    os.makedirs(p, exist_ok=True)
+    return {"status": "success", "path": p}
+
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     id = str(uuid.uuid4())
@@ -106,8 +120,16 @@ async def upload(file: UploadFile = File(...)):
 async def meta(id: str):
     p = next((os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) if f.startswith(id)), None)
     if not p: raise HTTPException(404)
-    s = next(s for s in ffmpeg.probe(p)['streams'] if s['codec_type'] == 'video')
-    return {"duration": float(ffmpeg.probe(p)['format']['duration']), "width": int(s['width']), "height": int(s['height']), "avg_frame_rate": s['avg_frame_rate']}
+    probe = ffmpeg.probe(p)
+    s = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+    fps = eval(s.get('avg_frame_rate', '30/1'))
+    return {
+        "duration": float(probe['format'].get('duration', 0)), 
+        "width": int(s['width']), 
+        "height": int(s['height']), 
+        "avg_frame_rate": f"{round(fps, 2)} FPS",
+        "ai_ready": is_model_ready
+    }
 
 @app.websocket("/ws/process/{id}")
 async def ws_process(ws: WebSocket, id: str):
@@ -118,16 +140,15 @@ async def ws_process(ws: WebSocket, id: str):
         vid = next(os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) if f.startswith(id))
         base = os.path.abspath(out) if out else os.path.join(os.path.abspath(OUTPUT_DIR), id)
         os.makedirs(base, exist_ok=True)
-        s_dir, b_dir = os.path.join(base, "sharp"), os.path.join(base, "blur")
-        for d in [s_dir, b_dir]: 
+        sd, bd = os.path.join(base, "sharp"), os.path.join(base, "blur")
+        for d in [sd, bd]:
             if os.path.exists(d): shutil.rmtree(d)
             os.makedirs(d, exist_ok=True)
         tmp = os.path.join(base, f"tmp_{uuid.uuid4().hex}")
         os.makedirs(tmp, exist_ok=True)
         await ws.send_json({"type": "status", "message": "1/2 EXTRACTING"})
         def run():
-            try: (ffmpeg.input(vid).filter('fps', fps=fps).output(os.path.join(tmp, "f_%04d.jpg"), qscale=2).overwrite_output().run(capture_stdout=True, capture_stderr=True)); return True
-            except: return False
+            (ffmpeg.input(vid).filter('fps', fps=fps).output(os.path.join(tmp, "f_%04d.jpg"), qscale=2).overwrite_output().run(capture_stdout=True, capture_stderr=True))
         await asyncio.to_thread(run)
         await ws.send_json({"type": "status", "message": "2/2 ANALYZING"})
         files = sorted([f for f in os.listdir(tmp) if f.endswith(".jpg")])
@@ -136,13 +157,15 @@ async def ws_process(ws: WebSocket, id: str):
             img = cv2.imread(os.path.join(tmp, f))
             var = float(cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
             is_b = var < threshold
-            shutil.move(os.path.join(tmp, f), os.path.join(b_dir if is_b else s_dir, f))
-            p_url = f"/images/{os.path.relpath(os.path.join(b_dir if is_b else s_dir, f), os.path.abspath(OUTPUT_DIR))}"
-            res.append({"filename": f, "url": p_url, "score": round(var, 2), "is_blurry": is_b, "full_path": os.path.join(b_dir if is_b else s_dir, f)})
+            shutil.move(os.path.join(tmp, f), os.path.join(bd if is_b else sd, f))
+            p_url = f"/images/{os.path.relpath(os.path.join(bd if is_b else sd, f), os.path.abspath(OUTPUT_DIR))}"
+            res.append({"filename": f, "url": p_url, "score": round(var, 2), "is_blurry": is_b, "full_path": os.path.join(bd if is_b else sd, f)})
             if i % 10 == 0: await ws.send_json({"type": "progress", "current": i+1, "total": len(files)})
         shutil.rmtree(tmp)
         await ws.send_json({"type": "complete", "results": res, "output_dir": base})
-    except Exception as e: await ws.send_json({"type": "error", "message": str(e)})
+    except Exception as e:
+        traceback.print_exc()
+        await ws.send_json({"type": "error", "message": str(e)})
 
 @app.post("/segment")
 async def segment(data: dict):
@@ -150,11 +173,11 @@ async def segment(data: dict):
     img = cv2.imread(data['image_path'])
     predictor.set_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     m, s, _ = predictor.predict(point_coords=np.array(data['points']), point_labels=np.array([1]*len(data['points'])), multimask_output=True)
-    mask_overlay = img.copy()
-    mask_overlay[m[np.argmax(s)]] = [0, 0, 255]
-    path = os.path.join(MASK_DIR, f"m_{uuid.uuid4().hex}.png")
-    cv2.imwrite(path, mask_overlay)
-    return {"mask_url": f"/masks/{os.path.basename(path)}"}
+    overlay = img.copy()
+    overlay[m[np.argmax(s)]] = [0, 0, 255]
+    name = f"m_{uuid.uuid4().hex}.png"
+    cv2.imwrite(os.path.join(MASK_DIR, name), overlay)
+    return {"mask_url": f"/masks/{name}"}
 
 @app.post("/sync-folders")
 async def sync(data: dict):
