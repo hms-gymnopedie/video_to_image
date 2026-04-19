@@ -23,6 +23,13 @@
 - **Improved:** Backend startup resilience.
 - **Updated:** Versioning to V3.3.7.
 
+## [2026-04-16] Update V3.5.0
+- **Added:** Startup-resilient backend. The server now starts immediately even if the SAM model is missing, allowing core features (extraction, metadata) to function.
+- **Improved:** Reliable model mirror using Hugging Face.
+- **Added:** Real-time AI Engine status indicator (Online/Offline) in the dashboard.
+- **Improved:** Simplified backend code for better maintainability and error handling.
+- **Updated:** Versioning to V3.5.0.
+
 ## [2026-04-16] Update V3.3.5
 - **Fixed:** Persistent environment and dependency sync issues by providing a definitive clean-build script.
 - **Improved:** Backend version identification for easier debugging.

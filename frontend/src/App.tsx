@@ -260,9 +260,16 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V3.4.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V3.5.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
-            {metadata && <Typography variant="caption" color="success.main">● ENGINE_READY</Typography>}
+            {metadata && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Typography variant="caption" color={metadata.ai_ready ? "success.main" : "error.main"} sx={{ fontWeight: 'bold' }}>
+                  {metadata.ai_ready ? "● AI_ENGINE_ONLINE" : "○ AI_ENGINE_OFFLINE"}
+                </Typography>
+                <Typography variant="caption" color="success.main">● PIPELINE_READY</Typography>
+              </Box>
+            )}
           </Toolbar>
         </AppBar>
 
