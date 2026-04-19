@@ -29,12 +29,10 @@ for d in [UPLOAD_DIR, OUTPUT_DIR, MASK_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # --- PyTorch 2.6 Compatibility Fix ---
-# SAM model registry uses a legacy torch.load that fails with weights_only=True
 original_torch_load = torch.load
 @functools.wraps(original_torch_load)
 def patched_torch_load(*args, **kwargs):
-    if 'weights_only' not in kwargs:
-        kwargs['weights_only'] = False
+    if 'weights_only' not in kwargs: kwargs['weights_only'] = False
     return original_torch_load(*args, **kwargs)
 torch.load = patched_torch_load
 # -------------------------------------
@@ -52,15 +50,18 @@ app.add_middleware(
 MODEL_CONFIGS = {
     "vit_b": {
         "checkpoint": "sam_vit_b_01ec10.pth",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec10.pth"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec10.pth",
+        "min_size": 300 * 1024 * 1024 # 300MB
     },
     "vit_l": {
         "checkpoint": "sam_vit_l_0b31ee.pth",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b31ee.pth"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b31ee.pth",
+        "min_size": 1000 * 1024 * 1024 # 1GB
     },
     "vit_h": {
         "checkpoint": "sam_vit_h_4b8939.pth",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
+        "min_size": 2000 * 1024 * 1024 # 2GB
     }
 }
 
@@ -71,26 +72,46 @@ predictor = None
 def download_model(model_type):
     config = MODEL_CONFIGS[model_type]
     checkpoint = config["checkpoint"]
-    if not os.path.exists(checkpoint):
-        print(f"Downloading {model_type} model ({checkpoint})...")
-        response = requests.get(config["url"], stream=True)
+    
+    # Check if exists and is NOT a tiny error file
+    if os.path.exists(checkpoint):
+        if os.path.getsize(checkpoint) > 1024 * 1024: # Must be at least 1MB
+            return True
+        else:
+            print(f"Corrupted model file detected ({checkpoint}). Deleting...")
+            os.remove(checkpoint)
+
+    print(f"Downloading {model_type} model ({checkpoint}). This might take a while...")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        response = requests.get(config["url"], stream=True, headers=headers)
+        response.raise_for_status()
         with open(checkpoint, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+            for chunk in response.iter_content(chunk_size=1024*1024): # 1MB chunks
+                if chunk: f.write(chunk)
         print("Download complete.")
+        return True
+    except Exception as e:
+        print(f"Download failed: {e}")
+        return False
 
 def load_sam_model(model_type):
     global predictor, current_model_type
     try:
-        download_model(model_type)
+        if not download_model(model_type):
+            print(f"Skipping load due to download failure.")
+            return False
+            
         if predictor is not None:
             del predictor
             if torch.cuda.is_available(): torch.cuda.empty_cache()
+            
+        print(f"Loading SAM {model_type} on {DEVICE}...")
         sam = sam_model_registry[model_type](checkpoint=MODEL_CONFIGS[model_type]["checkpoint"])
         sam.to(device=DEVICE)
         predictor = SamPredictor(sam)
         current_model_type = model_type
-        print(f"SAM {model_type} loaded on {DEVICE}.")
+        print(f"SAM {model_type} loaded successfully.")
         return True
     except Exception as e:
         print(f"Load Error: {e}")
@@ -102,13 +123,13 @@ async def startup_event():
 
 @app.get("/health")
 async def health_check(): 
-    return {"status": "ok", "version": "3.3.7", "device": DEVICE, "model": current_model_type}
+    return {"status": "ok", "version": "3.3.8", "device": DEVICE, "model": current_model_type}
 
 @app.post("/change-model/{model_type}")
 async def change_model(model_type: str):
     if model_type not in MODEL_CONFIGS: raise HTTPException(status_code=400, detail="Invalid model")
     if load_sam_model(model_type): return {"status": "success", "model": model_type}
-    raise HTTPException(status_code=500, detail="Model load failed")
+    raise HTTPException(status_code=500, detail="Model load failed. Check server logs.")
 
 @app.get("/directories")
 async def list_directories():
@@ -119,7 +140,7 @@ async def list_directories():
                 for entry in entries:
                     if entry.is_dir() and not entry.name.startswith('.'):
                         d['children'].append(get_dir_structure(entry.path))
-        except Exception: pass
+        except: pass
         return d
     return get_dir_structure(os.path.abspath(OUTPUT_DIR))
 
@@ -194,6 +215,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
 
 @app.post("/segment")
 async def segment_image(data: dict):
+    if predictor is None: raise HTTPException(status_code=503, detail="SAM not loaded")
     image = cv2.imread(data['image_path'])
     predictor.set_image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     masks, scores, _ = predictor.predict(point_coords=np.array(data['points']), point_labels=np.array([1]*len(data['points'])), multimask_output=True)

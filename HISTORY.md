@@ -1,5 +1,10 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.8
+- **Fixed:** `invalid load key, '<'` error by improving the model download logic. Tiny error/HTML files are now detected and deleted automatically.
+- **Improved:** Added User-Agent headers and download verification to ensure model weights are downloaded correctly from Meta's servers.
+- **Updated:** Versioning to V3.3.8.
+
 ## [2026-04-16] Update V3.3.7
 - **Fixed:** PyTorch 2.6 weights loading security error. Implemented a monkeypatch for `torch.load` to ensure compatibility with Segment Anything Model (SAM) registry.
 - **Fixed:** Port already in use error by terminating background processes on 8080.
