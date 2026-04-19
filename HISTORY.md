@@ -1,5 +1,12 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.3
+- **Restored:** Complete video metadata view (Resolution, FPS, Length, Aspect Ratio) during summary.
+- **Fixed:** Critical 404 errors by consolidating backend routing and ensuring all endpoints are registered.
+- **Fixed:** Dependency issues by updating `requirements.txt` with `torch`, `requests`, and `segment-anything`.
+- **Improved:** Robustness of the AI Masking pipeline.
+- **Updated:** Versioning to V3.3.3.
+
 ## [2026-04-16] Update V3.3.2
 - **Fixed:** `ModuleNotFoundError: No module named 'requests'` by adding the library to the virtual environment and updating `requirements.txt`.
 - **Improved:** Standardized project dependencies for robust setup on new environments.
