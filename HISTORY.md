@@ -1,5 +1,11 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.7
+- **Fixed:** PyTorch 2.6 weights loading security error. Implemented a monkeypatch for `torch.load` to ensure compatibility with Segment Anything Model (SAM) registry.
+- **Fixed:** Port already in use error by terminating background processes on 8080.
+- **Improved:** Backend startup resilience.
+- **Updated:** Versioning to V3.3.7.
+
 ## [2026-04-16] Update V3.3.5
 - **Fixed:** Persistent environment and dependency sync issues by providing a definitive clean-build script.
 - **Improved:** Backend version identification for easier debugging.
