@@ -1,5 +1,10 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.1
+- **Fixed:** 404 error when creating a new folder by restoring the missing `/create-directory` endpoint in the backend.
+- **Improved:** Code consistency and endpoint organization in `main.py`.
+- **Updated:** Versioning to V3.3.1.
+
 ## [2026-04-16] Update V3.3.0
 - **Restored:** Full video metadata summary (Resolution, FPS, Length, Aspect Ratio) after upload.
 - **Restored:** Interactive folder management and application presets.

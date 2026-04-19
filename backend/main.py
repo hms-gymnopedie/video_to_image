@@ -66,13 +66,9 @@ def load_sam_model(model_type):
     try:
         download_model(model_type)
         print(f"Loading {model_type} into memory ({DEVICE})...")
-        
-        # Clear existing memory
         if predictor is not None:
             del predictor
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
         sam = sam_model_registry[model_type](checkpoint=MODEL_CONFIGS[model_type]["checkpoint"])
         sam.to(device=DEVICE)
         predictor = SamPredictor(sam)
@@ -85,30 +81,19 @@ def load_sam_model(model_type):
 
 @app.on_event("startup")
 async def startup_event():
-    # Initial load (default vit_b)
     load_sam_model("vit_b")
 
 @app.post("/change-model/{model_type}")
 async def change_model(model_type: str):
-    if model_type not in MODEL_CONFIGS:
-        raise HTTPException(status_code=400, detail="Invalid model type")
-    
+    if model_type not in MODEL_CONFIGS: raise HTTPException(status_code=400, detail="Invalid model type")
     success = load_sam_model(model_type)
-    if success:
-        return {"status": "success", "model": model_type, "device": DEVICE}
-    else:
-        raise HTTPException(status_code=500, detail=f"Failed to load model {model_type}")
+    if success: return {"status": "success", "model": model_type, "device": DEVICE}
+    else: raise HTTPException(status_code=500, detail=f"Failed to load model {model_type}")
 
 @app.get("/health")
 async def health_check(): 
-    return {
-        "status": "ok", 
-        "version": "3.1.0", 
-        "device": DEVICE, 
-        "current_model": current_model_type
-    }
+    return {"status": "ok", "version": "3.3.1", "device": DEVICE, "current_model": current_model_type}
 
-# --- Standard App Logic (Upload, Metadata, WebSocket Process, Sync) ---
 UPLOAD_DIR = "uploads"
 DEFAULT_OUTPUT_DIR = "output"
 MASK_DIR = "masks"
@@ -131,6 +116,19 @@ async def list_directories():
         except Exception: pass
         return d
     return get_dir_structure(os.path.abspath(DEFAULT_OUTPUT_DIR))
+
+class CreateDirRequest(BaseModel):
+    parent_path: str
+    new_name: str
+
+@app.post("/create-directory")
+async def create_directory(data: CreateDirRequest):
+    new_path = os.path.join(data.parent_path, data.new_name)
+    try:
+        os.makedirs(new_path, exist_ok=True)
+        return {"status": "success", "path": new_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
@@ -245,13 +243,7 @@ async def websocket_process(websocket: WebSocket, file_id: str):
             shutil.move(src_path, dst_path)
             
             preview_url = f"/images/{os.path.relpath(dst_path, os.path.abspath(DEFAULT_OUTPUT_DIR))}" if is_internal else None
-            results.append({
-                "filename": str(filename), 
-                "url": preview_url, 
-                "score": round(variance, 2), 
-                "is_blurry": is_blurry,
-                "full_path": dst_path
-            })
+            results.append({"filename": str(filename), "url": preview_url, "score": round(variance, 2), "is_blurry": is_blurry, "full_path": dst_path})
             
             if i % 10 == 0 or i == len(raw_files) - 1:
                 await websocket.send_json({"type": "progress", "current": i + 1, "total": len(raw_files), "message": f"SORTING: {i+1}/{len(raw_files)}"})
@@ -279,14 +271,10 @@ async def segment_image(data: SegmentRequest):
         image = cv2.imread(data.image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         predictor.set_image(image)
-        masks, scores, _ = predictor.predict(
-            point_coords=np.array(data.points),
-            point_labels=np.array(data.labels),
-            multimask_output=True,
-        )
+        masks, scores, _ = predictor.predict(point_coords=np.array(data.points), point_labels=np.array(data.labels), multimask_output=True)
         mask = masks[np.argmax(scores)]
         mask_overlay = image.copy()
-        mask_overlay[mask] = [0, 0, 255] # Red overlay
+        mask_overlay[mask] = [0, 0, 255]
         mask_id = str(uuid.uuid4())
         mask_filename = f"mask_{mask_id}.png"
         mask_path = os.path.join(MASK_DIR, mask_filename)
@@ -295,6 +283,25 @@ async def segment_image(data: SegmentRequest):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+class SyncRequest(BaseModel):
+    output_dir: str
+    threshold: float
+    results: List[dict]
+
+@app.post("/sync-folders")
+async def sync_folders(data: SyncRequest):
+    try:
+        sharp_dir, blur_dir = os.path.join(data.output_dir, "sharp"), os.path.join(data.output_dir, "blur")
+        for d in [sharp_dir, blur_dir]: os.makedirs(d, exist_ok=True)
+        for res in data.results:
+            filename = res['filename']
+            should_be_blurry = res['score'] < data.threshold
+            current_sharp, current_blur = os.path.join(sharp_dir, filename), os.path.join(blur_dir, filename)
+            if should_be_blurry and os.path.exists(current_sharp): shutil.move(current_sharp, current_blur)
+            elif not should_be_blurry and os.path.exists(current_blur): shutil.move(current_blur, current_sharp)
+        return {"status": "success"}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
