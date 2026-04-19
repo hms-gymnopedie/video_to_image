@@ -1,5 +1,9 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.4
+- **Improved:** Backend environment setup guidance. Provided a comprehensive script to reset `venv` and install all AI/Backend dependencies.
+- **Updated:** Versioning to V3.3.4.
+
 ## [2026-04-16] Update V3.3.3
 - **Restored:** Complete video metadata view (Resolution, FPS, Length, Aspect Ratio) during summary.
 - **Fixed:** Critical 404 errors by consolidating backend routing and ensuring all endpoints are registered.

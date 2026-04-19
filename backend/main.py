@@ -85,7 +85,7 @@ async def startup_event():
 
 @app.get("/health")
 async def health_check(): 
-    return {"status": "ok", "version": "3.3.3", "device": DEVICE, "model": current_model_type}
+    return {"status": "ok", "version": "3.3.4", "device": DEVICE, "model": current_model_type}
 
 @app.post("/change-model/{model_type}")
 async def change_model(model_type: str):
