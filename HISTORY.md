@@ -1,5 +1,10 @@
 # Project Update History
 
+## [2026-04-16] Update V3.3.5
+- **Fixed:** Persistent environment and dependency sync issues by providing a definitive clean-build script.
+- **Improved:** Backend version identification for easier debugging.
+- **Updated:** Versioning to V3.3.5.
+
 ## [2026-04-16] Update V3.3.4
 - **Improved:** Backend environment setup guidance. Provided a comprehensive script to reset `venv` and install all AI/Backend dependencies.
 - **Updated:** Versioning to V3.3.4.
