@@ -1,5 +1,15 @@
 # Project Update History
 
+## [2026-04-20] Update V4.0.0 — SAM 2.1 + Grounded-SAM 2 Migration
+- **Replaced:** SAM v1 (`segment-anything`) with SAM 2.1 (`sam2`) for superior temporal consistency on video inputs. Image + video predictors now loaded via Hugging Face Hub (`facebook/sam2.1-hiera-*`).
+- **Added:** `ai_engine.py` module encapsulating SAM 2.1, Grounding DINO, and mask I/O helpers.
+- **Added:** Phase 2 — video propagation endpoint `WS /ws/segment-video`. One click on any frame produces consistent masks for the entire sequence.
+- **Added:** Phase 3 — reconstruction-ready binary mask output (`<scene>/masks/<frame>.png`, 255=keep / 0=exclude) plus `/reconstruction-mask-info` helper for 3DGS/2DGS/COLMAP conventions.
+- **Added:** Phase 4 — Grounded-SAM 2 text-prompt segmentation. Endpoints `POST /segment-text` (single frame) and `WS /ws/segment-text-batch` (full sequence) accept queries like `["person", "sky", "car"]`.
+- **Improved:** Apple Silicon (M-series) MPS auto-detection; CUDA remains preferred when available.
+- **Preserved:** Legacy `vit_b/vit_l/vit_h` names remapped to `tiny/base_plus/large` so the existing frontend dropdown keeps working.
+- **Updated:** Versioning to V4.0.0. Install note: `pip install "git+https://github.com/facebookresearch/sam2.git"` is required in addition to `requirements.txt`.
+
 ## [2026-04-16] Update V3.4.0
 - **Improved:** SAM model download resilience. Implemented browser-imitation headers for `curl` and `requests` to bypass 403 Forbidden errors on Meta's public servers.
 - **Improved:** Automated model verification. Model files are now strictly checked for minimum size (100MB) to prevent corrupt/HTML downloads.

@@ -6,6 +6,7 @@ venv/
 backend/venv/
 backend/uploads/
 backend/output/
+backend/masks/
 
 # Node
 node_modules/

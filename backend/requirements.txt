@@ -1,10 +1,27 @@
+# --- Web Framework ---
 fastapi
 uvicorn[standard]
 python-multipart
+websockets
+pydantic
+
+# --- Video / Image Processing ---
 opencv-python
 ffmpeg-python
-websockets
+numpy
+Pillow
+
+# --- HTTP / Utilities ---
 requests
+
+# --- AI Engine (SAM 2.1 + Grounded-SAM 2) ---
+# torch 2.6+ requires the weights_only monkeypatch in ai_engine.py
 torch
 torchvision
-segment-anything
+# SAM 2 has no stable PyPI package — install from source:
+#   pip install "git+https://github.com/facebookresearch/sam2.git"
+# Grounding DINO is loaded via HuggingFace transformers (no extra dep).
+transformers>=4.40
+huggingface_hub
+hydra-core
+iopath
