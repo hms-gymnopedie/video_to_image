@@ -22,13 +22,14 @@ from pydantic import BaseModel
 
 from ai_engine import (
     SAMEngine,
+    detect_duplicate_frames,
     generate_mask_previews,
     resolve_model_size,
     save_binary_mask,
     save_overlay,
 )
 
-VERSION = "4.0.0"
+VERSION = "4.4.0"
 
 # --- Directories ---
 UPLOAD_DIR, OUTPUT_DIR, MASK_DIR = "uploads", "output", "masks"
@@ -100,17 +101,26 @@ async def change_model(model_type: str):
         size = resolve_model_size(model_type)
     except ValueError:
         raise HTTPException(400, detail=f"Unknown model: {model_type}")
-    ok = await asyncio.to_thread(engine.load_sam2, size)
+    # Dispatcher picks SAM 2.1 or SAM 3 / 3.1 based on the resolved name.
+    ok = await asyncio.to_thread(engine.load_model, size)
     if ok:
-        return {"status": "success", "model": size}
-    raise HTTPException(
-        500,
-        detail=(
+        return {"status": "success", "model": size, "backend": engine.backend}
+
+    if engine.backend == "sam3" or size in {"sam3", "sam3.1"}:
+        detail = (
+            f"Failed to load {size.upper()}. Check server logs. If sam3 is "
+            "missing, install with: "
+            'pip install "git+https://github.com/facebookresearch/sam3.git" '
+            "and run `hf auth login` after requesting checkpoint access on "
+            f"https://huggingface.co/facebook/{size}."
+        )
+    else:
+        detail = (
             f"Failed to load SAM 2.1 ({size}). "
             "Check server logs. If sam2 is missing, install with: "
             'pip install "git+https://github.com/facebookresearch/sam2.git"'
-        ),
-    )
+        )
+    raise HTTPException(500, detail=detail)
 
 
 # --------------------------------------------------------------- Dashboard I/O
@@ -181,6 +191,13 @@ async def ws_process(ws: WebSocket, file_id: str):
         else:
             out = out_raw
         out = (out or "").strip()
+        # Optional crop. Pixel coords on the source video. {} or omitted = no crop.
+        crop = data.get("crop") or {}
+        crop_w = int(crop.get("width", 0)) if crop else 0
+        crop_h = int(crop.get("height", 0)) if crop else 0
+        crop_x = int(crop.get("x", 0)) if crop else 0
+        crop_y = int(crop.get("y", 0)) if crop else 0
+        crop_active = crop_w > 0 and crop_h > 0
 
         vid = next(
             os.path.join(UPLOAD_DIR, f)
@@ -192,20 +209,35 @@ async def ws_process(ws: WebSocket, file_id: str):
 
         sd = os.path.join(base, "sharp")
         bd = os.path.join(base, "blur")
+        dd = os.path.join(base, "drop")
+        ud = os.path.join(base, "dup")
+        # Reset auto-classified buckets on every START_PIPELINE.
         for d in [sd, bd]:
             if os.path.exists(d):
                 shutil.rmtree(d)
             os.makedirs(d, exist_ok=True)
+        # Preserve `drop/` and `dup/` across re-runs — those are user-curated
+        # decisions and should not be erased by re-extraction.
+        os.makedirs(dd, exist_ok=True)
+        os.makedirs(ud, exist_ok=True)
 
         tmp = os.path.join(base, f"tmp_{uuid.uuid4().hex}")
         os.makedirs(tmp, exist_ok=True)
 
-        await ws.send_json({"type": "status", "message": "1/2 EXTRACTING"})
+        await ws.send_json({
+            "type": "status",
+            "message": "1/2 EXTRACTING" + (
+                f" (crop {crop_w}x{crop_h}+{crop_x}+{crop_y})" if crop_active else ""
+            ),
+        })
 
         def run():
+            stream = ffmpeg.input(vid).filter("fps", fps=fps)
+            if crop_active:
+                # FFmpeg crop=W:H:X:Y. Source is the post-fps stream.
+                stream = stream.filter("crop", crop_w, crop_h, crop_x, crop_y)
             (
-                ffmpeg.input(vid)
-                .filter("fps", fps=fps)
+                stream
                 .output(os.path.join(tmp, "f_%04d.jpg"), qscale=2)
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
@@ -292,6 +324,17 @@ async def ws_segment_video(ws: WebSocket):
         frames_dir = os.path.abspath(req.frames_dir)
         if not os.path.isdir(frames_dir):
             await ws.send_json({"type": "error", "message": f"frames_dir not found: {frames_dir}"})
+            return
+        # Reconstruction masking is intentionally limited to the `sharp/` bucket.
+        # Frames in `blur/` or `drop/` should not be masked.
+        if os.path.basename(frames_dir) != "sharp":
+            await ws.send_json({
+                "type": "error",
+                "message": (
+                    f"Masking only operates on the 'sharp/' folder. "
+                    f"Got: {frames_dir} — please pass <scene>/sharp."
+                ),
+            })
             return
 
         scene_dir = os.path.abspath(req.scene_dir) if req.scene_dir else os.path.dirname(frames_dir)
@@ -478,6 +521,15 @@ async def ws_segment_text_batch(ws: WebSocket):
                 return
 
         frames_dir = os.path.abspath(req.frames_dir)
+        if os.path.basename(frames_dir) != "sharp":
+            await ws.send_json({
+                "type": "error",
+                "message": (
+                    f"Text-batch masking only operates on the 'sharp/' folder. "
+                    f"Got: {frames_dir} — please pass <scene>/sharp."
+                ),
+            })
+            return
         scene_dir = os.path.abspath(req.scene_dir) if req.scene_dir else os.path.dirname(frames_dir)
         mask_dir = os.path.join(scene_dir, "masks")
         os.makedirs(mask_dir, exist_ok=True)
@@ -597,16 +649,25 @@ async def overlay_file(path: str):
 
 
 # ------------------------------------------------------- Manual reclassification
+# Three-way classification:
+#   sharp/  -> usable frames (only these are fed to masking + reconstruction)
+#   blur/   -> kept on disk for review but excluded from downstream stages
+#   drop/   -> user-marked discards (e.g. obstructed, off-scene, duplicate)
+RECLASSIFY_TARGETS = ("sharp", "blur", "drop")
+
+
 class ReclassifyRequest(BaseModel):
     full_path: str
-    target: str        # "sharp" or "blur"
-    output_dir: str    # scene root containing sharp/ and blur/
+    target: str        # "sharp" | "blur" | "drop"
+    output_dir: str    # scene root containing sharp/, blur/, drop/
 
 
 @app.post("/reclassify")
 async def reclassify(req: ReclassifyRequest):
-    if req.target not in ("sharp", "blur"):
-        raise HTTPException(400, "target must be 'sharp' or 'blur'")
+    if req.target not in RECLASSIFY_TARGETS:
+        raise HTTPException(
+            400, f"target must be one of {RECLASSIFY_TARGETS}"
+        )
 
     src = os.path.abspath(req.full_path)
     scene = os.path.abspath(req.output_dir)
@@ -641,19 +702,250 @@ async def reclassify(req: ReclassifyRequest):
     }
 
 
+# ---------------------------------------------------- Bulk manual reclassification
+class BulkReclassifyRequest(BaseModel):
+    full_paths: List[str]
+    target: str        # "sharp" | "blur" | "drop"
+    output_dir: str
+
+
+@app.post("/reclassify-bulk")
+async def reclassify_bulk(req: BulkReclassifyRequest):
+    """Move many frames to the same target bucket in a single call."""
+    if req.target not in RECLASSIFY_TARGETS:
+        raise HTTPException(400, f"target must be one of {RECLASSIFY_TARGETS}")
+
+    scene = os.path.abspath(req.output_dir)
+    target_dir = os.path.join(scene, req.target)
+    os.makedirs(target_dir, exist_ok=True)
+    output_abs = os.path.abspath(OUTPUT_DIR)
+
+    moved: list = []
+    failed: list = []
+    for raw in req.full_paths:
+        src = os.path.abspath(raw)
+        if not os.path.isfile(src):
+            failed.append({"full_path": raw, "error": "not found"})
+            continue
+        fname = os.path.basename(src)
+        dst = os.path.join(target_dir, fname)
+        try:
+            if src != dst:
+                if os.path.exists(dst):
+                    os.remove(dst)
+                shutil.move(src, dst)
+            try:
+                rel = os.path.relpath(dst, output_abs)
+                url = f"/images/{rel}" if not rel.startswith("..") else None
+            except ValueError:
+                url = None
+            moved.append({
+                "filename": fname,
+                "full_path": dst,
+                "url": url,
+            })
+        except Exception as e:
+            failed.append({"full_path": raw, "error": str(e)})
+
+    return {
+        "status": "success" if not failed else "partial",
+        "target": req.target,
+        "moved": moved,
+        "failed": failed,
+    }
+
+
 # --------------------------------------------------------- Sync & static mounts
 @app.post("/sync-folders")
 async def sync(data: dict):
+    """Re-apply blur threshold to existing results.
+
+    Frames currently in `drop/` or `dup/` are NEVER touched — those are
+    user-curated decisions (manual discard or auto-detected duplicate) and the
+    threshold slider must not undo them. Files in `sharp/` and `blur/` are
+    reshuffled by the new threshold.
+    """
     sd = os.path.join(data["output_dir"], "sharp")
     bd = os.path.join(data["output_dir"], "blur")
+    dd = os.path.join(data["output_dir"], "drop")
+    ud = os.path.join(data["output_dir"], "dup")
     for r in data["results"]:
-        is_b = r["score"] < data["threshold"]
         fn = r["filename"]
+        # Skip anything already in drop/ or dup/.
+        if os.path.exists(os.path.join(dd, fn)) or os.path.exists(os.path.join(ud, fn)):
+            continue
+        is_b = r["score"] < data["threshold"]
         src = os.path.join(bd if os.path.exists(os.path.join(bd, fn)) else sd, fn)
+        if not os.path.exists(src):
+            # File may have been dropped/dup'd/deleted — skip silently.
+            continue
         dst = os.path.join(bd if is_b else sd, fn)
         if src != dst:
             shutil.move(src, dst)
     return {"status": "success"}
+
+
+# ----------------------------------------------------------- Duplicate detection
+class DetectDuplicatesRequest(BaseModel):
+    scene_dir: str
+    threshold: int = 5    # max Hamming distance to be considered a duplicate
+    frames_subdir: str = "sharp"
+
+
+@app.post("/detect-duplicates")
+async def detect_duplicates(req: DetectDuplicatesRequest):
+    """Scan <scene>/sharp/ (or another subdir) and flag near-duplicate frames.
+
+    Each result entry is a duplicate of `anchor_filename` (the most recent
+    kept frame), with `distance` = bit-difference of their dHashes. The user
+    can review the list and call /apply-duplicates to move them to dup/.
+    """
+    scene = os.path.abspath(req.scene_dir)
+    frames_dir = os.path.join(scene, req.frames_subdir)
+    if not os.path.isdir(frames_dir):
+        raise HTTPException(404, f"frames dir not found: {frames_dir}")
+
+    candidates = await asyncio.to_thread(
+        detect_duplicate_frames, frames_dir, req.threshold
+    )
+    output_abs = os.path.abspath(OUTPUT_DIR)
+    enriched = []
+    for c in candidates:
+        try:
+            rel = os.path.relpath(c["full_path"], output_abs)
+            url = f"/images/{rel}" if not rel.startswith("..") else None
+        except ValueError:
+            url = None
+        enriched.append({**c, "url": url})
+
+    return {
+        "scene_dir": scene,
+        "frames_dir": frames_dir,
+        "threshold": req.threshold,
+        "scanned": len(os.listdir(frames_dir)) if os.path.isdir(frames_dir) else 0,
+        "candidates": enriched,
+    }
+
+
+class ApplyDuplicatesRequest(BaseModel):
+    scene_dir: str
+    filenames: List[str]   # basenames currently inside <scene>/sharp/
+
+
+@app.post("/apply-duplicates")
+async def apply_duplicates(req: ApplyDuplicatesRequest):
+    """Move the named sharp/ frames into dup/ for later review or restore."""
+    scene = os.path.abspath(req.scene_dir)
+    sd = os.path.join(scene, "sharp")
+    ud = os.path.join(scene, "dup")
+    os.makedirs(ud, exist_ok=True)
+
+    moved = []
+    failed = []
+    for fn in req.filenames:
+        if "/" in fn or "\\" in fn or fn in ("..", "."):
+            failed.append({"filename": fn, "error": "invalid name"})
+            continue
+        src = os.path.join(sd, fn)
+        dst = os.path.join(ud, fn)
+        if not os.path.isfile(src):
+            failed.append({"filename": fn, "error": "not in sharp/"})
+            continue
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+            shutil.move(src, dst)
+            moved.append({"filename": fn, "full_path": dst})
+        except Exception as e:
+            failed.append({"filename": fn, "error": str(e)})
+
+    return {
+        "status": "success" if not failed else "partial",
+        "moved_count": len(moved),
+        "moved": moved,
+        "failed": failed,
+        "dup_dir": ud,
+    }
+
+
+class RestoreDuplicatesRequest(BaseModel):
+    scene_dir: str
+    filenames: Optional[List[str]] = None   # None = restore all in dup/
+
+
+@app.post("/restore-duplicates")
+async def restore_duplicates(req: RestoreDuplicatesRequest):
+    """Move dup/ frames (or a named subset) back to sharp/."""
+    scene = os.path.abspath(req.scene_dir)
+    sd = os.path.join(scene, "sharp")
+    ud = os.path.join(scene, "dup")
+    if not os.path.isdir(ud):
+        return {"status": "success", "restored_count": 0, "restored": [], "failed": []}
+    os.makedirs(sd, exist_ok=True)
+
+    targets = req.filenames
+    if targets is None:
+        targets = sorted(
+            f for f in os.listdir(ud)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        )
+
+    restored = []
+    failed = []
+    for fn in targets:
+        if "/" in fn or "\\" in fn or fn in ("..", "."):
+            failed.append({"filename": fn, "error": "invalid name"})
+            continue
+        src = os.path.join(ud, fn)
+        dst = os.path.join(sd, fn)
+        if not os.path.isfile(src):
+            failed.append({"filename": fn, "error": "not in dup/"})
+            continue
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+            shutil.move(src, dst)
+            restored.append({"filename": fn, "full_path": dst})
+        except Exception as e:
+            failed.append({"filename": fn, "error": str(e)})
+
+    return {
+        "status": "success" if not failed else "partial",
+        "restored_count": len(restored),
+        "restored": restored,
+        "failed": failed,
+    }
+
+
+# ----------------------------------------------------- Source video preview frame
+@app.get("/preview-frame/{file_id}")
+async def preview_frame(file_id: str):
+    """Return the first frame of the uploaded source video as JPEG.
+
+    Used by the frontend [01] INPUT_SOURCE crop picker so the user can draw
+    a region of interest before extraction.
+    """
+    p = next(
+        (os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)),
+        None,
+    )
+    if not p:
+        raise HTTPException(404, "upload not found")
+    out_path = os.path.join(PREVIEW_DIR, f"src_{file_id}.jpg")
+
+    def _grab():
+        (
+            ffmpeg.input(p, ss=0)
+            .output(out_path, vframes=1, qscale=2, format="image2")
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+
+    if not os.path.isfile(out_path):
+        await asyncio.to_thread(_grab)
+    if not os.path.isfile(out_path):
+        raise HTTPException(500, "preview frame extraction failed")
+    return FileResponse(out_path, media_type="image/jpeg")
 
 
 app.mount("/images", StaticFiles(directory=OUTPUT_DIR), name="images")

@@ -1,17 +1,18 @@
-# Video → Image AI Pipeline (V4.0.0)
+# Video → Image AI Pipeline (V4.4.0)
 
 A dashboard for turning videos into reconstruction-ready image sequences for
 3D Gaussian Splatting (3DGS), 2D Gaussian Splatting (2DGS), and COLMAP / SfM.
 
 It combines FFmpeg-based frame extraction with Laplacian-variance blur filtering
-and a full **SAM 2.1 + Grounded-SAM 2** masking suite: point prompts, one-click
-video propagation, and text-prompt batch masking — all saved as binary masks
+and a full **SAM 2.1 + Grounded-SAM 2** masking suite — with optional
+**SAM 3 / SAM 3.1** backend on CUDA hosts. Point prompts, one-click video
+propagation, and text-prompt batch masking are all saved as binary masks
 (255 = keep, 0 = exclude) that drop directly into standard reconstruction
 pipelines.
 
-- Backend: FastAPI + PyTorch (SAM 2.1, Grounding DINO)
+- Backend: FastAPI + PyTorch (SAM 2.1 + Grounding DINO; optional SAM 3 / 3.1)
 - Frontend: React 19 + Vite + MUI 9
-- Runtime: macOS (MPS), CUDA, or CPU
+- Runtime: macOS (MPS), CUDA, or CPU — **SAM 3 / 3.1 requires CUDA**
 
 ---
 
@@ -19,21 +20,46 @@ pipelines.
 
 ### Extraction & quality filtering
 - Drag-and-drop video upload with metadata probe (resolution, FPS, duration, aspect).
+- **Source-video crop.** After upload, the dashboard fetches the first frame
+  via `GET /preview-frame/{file_id}` and lets the user drag a rectangle on it.
+  The selection is sent as `crop = {x, y, width, height}` and applied as an
+  FFmpeg `crop=` filter during extraction. Optional — leave empty for full-frame.
 - FFmpeg frame extraction at a user-chosen FPS.
 - Per-frame Laplacian-variance blur score.
 - Auto-split into `sharp/` and `blur/` folders with a live threshold slider.
 - Pipeline presets (3DGS / 2DGS / COLMAP) that configure FPS + threshold in one click.
-- **Manual reclassification** — override any frame between sharp/blur from the editor
-  (SHARP / BLUR button group); the file is physically moved.
-- **Keyboard navigation** — `←` / `→` cycle through frames inside the mask editor.
+- **Four-bucket classification — `sharp` / `blur` / `drop` / `dup`.** SHARP and
+  BLUR are produced automatically; **DROP is a manual discard bucket** and
+  **DUP holds auto-detected near-duplicates** (reversible). All three manual
+  buckets survive re-extractions and threshold re-syncs.
+- **Manual reclassification** — override any frame between sharp/blur/drop
+  from the editor (SHARP / BLUR / DROP button group); the file is physically
+  moved.
+- **Bulk classification.** Toggle `SELECT MODE` in `[03]` and click multiple
+  thumbnails to multi-select, then use the sticky bottom action bar
+  (`→ SHARP / → BLUR / → DROP / Clear`) to reclassify them in one call via
+  `POST /reclassify-bulk`.
+- **Duplicate / similar-frame removal (opt-in, reversible).** `DETECT
+  DUPLICATES` opens a dialog that runs an 8×8 dHash perceptual-hash scan with
+  a user-tunable Hamming-distance threshold (0–20). Each candidate is shown
+  alongside its anchor frame; APPLY moves them to `<scene>/dup/`, and
+  `RESTORE DUP` brings them back to `sharp/`.
+- **Keyboard shortcuts in the mask editor** — `←` / `→` navigate frames,
+  **`S`** = SHARP, **`B`** = BLUR, **`D`** = DROP.
+- **APPLY & SYNC FOLDERS** sits below the frame grid (review the auto-split, then
+  re-apply a new threshold). `drop/` and `dup/` are never touched by sync.
 
-### AI masking (SAM 2.1 + Grounded-SAM 2)
-- **Point-prompt masking** (Phase 1) — click the object in any frame; SAM 2.1 returns
-  the instance mask.
-- **Video propagation** (Phase 2) — one click on *any* frame propagates a temporally
-  consistent mask across the full sequence via the SAM 2.1 video predictor.
-- **Text-prompt masking** (Phase 4, Grounded-SAM 2) — prompt with comma-separated
-  phrases like `person, car, sky`; Grounding DINO detects, SAM 2.1 segments.
+### AI masking (SAM 2.1 + Grounded-SAM 2 / SAM 3 native)
+- **Sharp-only.** Masking always operates on `<scene>/sharp/`. Frames in `blur/`
+  or `drop/` are excluded — the backend rejects any other `frames_dir` outright.
+- **Point-prompt masking** (Phase 1) — click the object in any frame; the active
+  backend (SAM 2.1 or SAM 3) returns the instance mask.
+- **Video propagation** (Phase 2) — one click on any sharp frame propagates a
+  temporally consistent mask across the full sharp sequence via the active
+  backend's video predictor.
+- **Text-prompt masking** (Phase 4) —
+  - **SAM 2.1 backend**: Grounded-SAM 2 (Grounding DINO detect → SAM 2.1 segment).
+  - **SAM 3 backend**: native Promptable Concept Segmentation, no DINO required.
 - **Reconstruction-ready binary masks** (Phase 3) — `<scene>/masks/<frame>.png`,
   255=keep / 0=exclude, compatible with 3DGS, 2DGS, COLMAP.
 - **COMBINE mode** — ANDs new masks with existing ones, so propagation + text
@@ -42,8 +68,18 @@ pipelines.
   the `masks/` folder free of no-op outputs.
 - **Mask preview** — per-frame red-tinted overlays in a paginated grid for
   visual verification; auto-opens after propagation / text-batch completes.
-- Dynamic model switching between Hiera-Tiny / Small / Base+ / Large.
-- Apple Silicon (MPS) and CUDA auto-detected; CPU fallback for development.
+- Dynamic model switching:
+  - SAM 2.1 — Hiera Tiny / Small / Base+ / Large
+  - SAM 3 — `facebook/sam3` (gated, CUDA only)
+  - SAM 3.1 — `facebook/sam3.1` (gated, CUDA only)
+- Apple Silicon (MPS) and CUDA auto-detected; CPU fallback for development. The
+  frontend disables SAM 3 / 3.1 options on non-CUDA hosts to prevent the
+  upstream `triton` dependency error.
+
+### Navigation
+- **Left sticky stage indicator** — a vertical stepper on the left edge that
+  highlights `[01] INPUT / [02] PIPELINE / [03] FRAMES / [04] MASKING` based on
+  scroll position. Click to jump. Auto-hidden below the `lg` breakpoint.
 
 ---
 
@@ -74,6 +110,27 @@ Model weights are downloaded automatically on first run via the Hugging Face
 Hub (`facebook/sam2.1-hiera-*` and `IDEA-Research/grounding-dino-base`) into
 `~/.cache/huggingface/hub/`. No manual weight placement is required.
 
+#### Optional: SAM 3 / SAM 3.1 (CUDA only)
+
+```bash
+# Same venv. Pin opencv to a numpy-1 compatible version since sam3 requires numpy<2.
+pip install "opencv-python<4.12" "opencv-python-headless<4.12"
+
+pip install "git+https://github.com/facebookresearch/sam3.git"
+pip install einops                          # transitive dep often missing
+# triton is required by upstream sam3 but has NO macOS / MPS / CPU build.
+# This is why SAM 3 is gated to CUDA hosts in the dashboard.
+
+# Checkpoints are gated. Request access on:
+#   https://huggingface.co/facebook/sam3
+#   https://huggingface.co/facebook/sam3.1
+# Then create a Read token at https://huggingface.co/settings/tokens and run:
+hf auth login    # or: export HF_TOKEN=hf_xxxxxxxxxxxxxx
+```
+
+`sam2` and `sam3` coexist in the same venv. Switching between them is a
+runtime choice via the model selector.
+
 ### Frontend
 
 ```bash
@@ -94,8 +151,10 @@ python main.py
 ```
 
 Serves at `http://localhost:8080`. The server starts immediately; SAM 2.1
-(`base_plus` by default) loads in the background. A status indicator in the
-dashboard reflects `SAM2_ONLINE` / `SAM2_OFFLINE`.
+(`base_plus` by default) loads in the background. The dashboard polls
+`/health` every 5 s; the status indicator reads `SAM2_ONLINE` / `SAM2_OFFLINE`
+or `SAM3_ONLINE` / `SAM3_OFFLINE` depending on the active backend, and the
+device chip (`CUDA` / `MPS` / `CPU`) lights up next to the engine selector.
 
 ### 2. Frontend
 

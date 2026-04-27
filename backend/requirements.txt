@@ -14,13 +14,19 @@ Pillow
 # --- HTTP / Utilities ---
 requests
 
-# --- AI Engine (SAM 2.1 + Grounded-SAM 2) ---
+# --- AI Engine (SAM 2.1 + Grounded-SAM 2 / optional SAM 3 / 3.1) ---
 # torch 2.6+ requires the weights_only monkeypatch in ai_engine.py
 torch
 torchvision
 # SAM 2 has no stable PyPI package — install from source:
 #   pip install "git+https://github.com/facebookresearch/sam2.git"
 # Grounding DINO is loaded via HuggingFace transformers (no extra dep).
+#
+# Optional: SAM 3 / SAM 3.1 backend (text prompts native, no DINO needed).
+# Coexists with sam2 — pick a model in the frontend selector to switch.
+#   pip install "git+https://github.com/facebookresearch/sam3.git"
+# Checkpoints (facebook/sam3, facebook/sam3.1) are gated on Hugging Face.
+# Request access there, then run `hf auth login` (or set HF_TOKEN).
 transformers>=4.40
 huggingface_hub
 hydra-core

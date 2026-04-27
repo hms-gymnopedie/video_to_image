@@ -74,13 +74,15 @@ const sandTheme = createTheme({
   shape: { borderRadius: 4 },
 });
 
+type Classification = 'sharp' | 'blur' | 'drop' | 'dup';
+
 interface ProcessResult {
   filename: string;
   url: string | null;
   score: number;
   is_blurry: boolean;
   full_path?: string;
-  manual_class?: 'sharp' | 'blur';
+  manual_class?: Classification;
 }
 
 interface BatchStatus {
@@ -103,12 +105,18 @@ const PRESETS = {
   'COLMAP': { fps: 3, threshold: 120, label: 'COLMAP/SfM' },
 };
 
-const SAM2_MODELS = [
-  { value: 'tiny',      label: 'Hiera-Tiny (Fastest)' },
-  { value: 'small',     label: 'Hiera-Small (Light)' },
-  { value: 'base_plus', label: 'Hiera-Base+ (Recommended)' },
-  { value: 'large',     label: 'Hiera-Large (Best Quality)' },
+// Two backends coexist behind /change-model. Names match resolve_model_size()
+// in backend/ai_engine.py — `tiny/small/base_plus/large` route to SAM 2.1,
+// `sam3/sam3.1` route to SAM 3 / SAM 3.1 (gated on Hugging Face).
+const MODELS = [
+  { value: 'tiny',      label: 'SAM 2.1 — Hiera-Tiny (Fastest)',     backend: 'sam2' },
+  { value: 'small',     label: 'SAM 2.1 — Hiera-Small (Light)',      backend: 'sam2' },
+  { value: 'base_plus', label: 'SAM 2.1 — Hiera-Base+ (Recommended)', backend: 'sam2' },
+  { value: 'large',     label: 'SAM 2.1 — Hiera-Large (Best Quality)', backend: 'sam2' },
+  { value: 'sam3',      label: 'SAM 3 (Text-native, gated)',          backend: 'sam3' },
+  { value: 'sam3.1',    label: 'SAM 3.1 (Latest, gated)',             backend: 'sam3' },
 ];
+const backendOf = (v: string) => MODELS.find(m => m.value === v)?.backend ?? 'sam2';
 
 function App() {
   const [file, setFile] = useState<File | null>(null);
@@ -145,6 +153,16 @@ function App() {
   const [isSegmenting, setIsSegmenting] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
+  // ---- Page stage tracker (left sticky stepper) ------------------------------
+  const STAGES = [
+    { key: 'input',   label: 'INPUT',     hint: 'Upload video' },
+    { key: 'config',  label: 'PIPELINE',  hint: 'FPS / threshold / model' },
+    { key: 'frames',  label: 'FRAMES',    hint: 'Sharp / Blur / Drop / Dup' },
+    { key: 'masking', label: 'MASKING',   hint: 'Reconstruction masks' },
+  ] as const;
+  const stageRefs = useRef<Array<HTMLElement | null>>([null, null, null, null]);
+  const [activeStage, setActiveStage] = useState(0);
+
   // ---- Phase 2: Video propagation ----
   const [propagating, setPropagating] = useState(false);
   const [propagateStatus, setPropagateStatus] = useState<BatchStatus | null>(null);
@@ -159,6 +177,33 @@ function App() {
   // ---- Phase 3: Reconstruction mask info ----
   const [maskInfo, setMaskInfo] = useState<MaskInfo | null>(null);
 
+  // ---- Multi-select bulk classification ----
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  // ---- Duplicate detection ----
+  type DupCandidate = {
+    filename: string;
+    full_path: string;
+    anchor_filename: string;
+    distance: number;
+    url?: string | null;
+  };
+  const [dupOpen, setDupOpen] = useState(false);
+  const [dupThreshold, setDupThreshold] = useState(5);
+  const [dupCandidates, setDupCandidates] = useState<DupCandidate[]>([]);
+  const [dupScanned, setDupScanned] = useState(0);
+  const [dupBusy, setDupBusy] = useState(false);
+  const [dupCount, setDupCount] = useState(0);   // current files in dup/
+
+  // ---- Source video crop ----
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [cropMode, setCropMode] = useState(false);
+  const [cropRect, setCropRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [cropDrag, setCropDrag] = useState<{ x: number; y: number } | null>(null);
+  const previewImgRef = useRef<HTMLImageElement>(null);
+
   // ---- COMBINE mode + mask preview viewer ----
   const [combineMode, setCombineMode] = useState(true);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -166,6 +211,14 @@ function App() {
   const [previewItems, setPreviewItems] = useState<Array<{ filename: string; overlay_url: string | null; coverage: number }>>([]);
   const [previewPage, setPreviewPage] = useState(0);
   const PREVIEW_PAGE_SIZE = 12;
+
+  // ---- Server info (backend /health) — drives device-aware model gating ----
+  // SAM 3 / 3.1 hard-depend on triton, which has no macOS / MPS / CPU build.
+  // We only enable those options when the backend reports device === 'cuda'.
+  const [serverInfo, setServerInfo] = useState<{
+    device?: string; backend?: string; ai_ready?: boolean; model?: string;
+  } | null>(null);
+  const isCudaHost = serverInfo?.device === 'cuda';
 
   const fetchDirectories = async () => {
     try {
@@ -175,13 +228,65 @@ function App() {
     } catch (err) { console.error(err); }
   };
 
-  useEffect(() => { fetchDirectories(); }, []);
+  const fetchServerInfo = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/health`);
+      setServerInfo(res.data);
+    } catch (err) { console.error(err); }
+  };
+
+  useEffect(() => {
+    fetchDirectories();
+    fetchServerInfo();
+    // Re-poll every 5s so the indicator updates after model swaps / DINO load.
+    const t = setInterval(fetchServerInfo, 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Track which section the user is currently looking at. Uses
+  // IntersectionObserver against a horizontal band centered on the viewport
+  // (rootMargin = -35% top, -55% bottom) so the active stage updates only
+  // when a section actually crosses the middle of the screen.
+  useEffect(() => {
+    const els = stageRefs.current.filter((el): el is HTMLElement => !!el);
+    if (els.length === 0) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        // Pick the entry that is most visible inside the focus band.
+        const visible = entries
+          .filter(e => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        if (visible.length > 0) {
+          const idx = stageRefs.current.indexOf(visible[0].target as HTMLElement);
+          if (idx >= 0) setActiveStage(idx);
+        }
+      },
+      { rootMargin: '-35% 0px -55% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] }
+    );
+    els.forEach(el => obs.observe(el));
+    return () => obs.disconnect();
+    // Re-bind when [04] mounts (serverOutputDir flips).
+  }, [serverOutputDir, results.length]);
+
+  const scrollToStage = (idx: number) => {
+    const el = stageRefs.current[idx];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const handleSamModelChange = async (newModel: string) => {
+    if (backendOf(newModel) === 'sam3' && !isCudaHost) {
+      setError(
+        `SAM 3 / SAM 3.1 require a CUDA GPU. The backend is running on ` +
+        `${serverInfo?.device ?? 'unknown'} — please use SAM 2.1 here, or ` +
+        `deploy this server on a CUDA host to use SAM 3.`
+      );
+      return;
+    }
     setIsModelLoading(true);
     try {
       await axios.post(`${API_BASE_URL}/change-model/${newModel}`);
       setSamModel(newModel);
+      fetchServerInfo();
     } catch (err: any) { setError(`MODEL_LOAD_ERROR: ${err.message}`); } finally { setIsModelLoading(false); }
   };
 
@@ -221,6 +326,10 @@ function App() {
       const metaRes = await axios.get(`${API_BASE_URL}/metadata/${id}`);
       setMetadata(metaRes.data);
       if (metaRes.data) setTotalEstimated(Math.ceil(metaRes.data.duration * fps));
+      // Source preview for the crop picker. Cache-bust per upload.
+      setPreviewSrc(`${API_BASE_URL}/preview-frame/${id}?t=${Date.now()}`);
+      setCropRect(null);
+      setCropMode(false);
     } catch (err: any) { setError(`CONNECTION_ERROR: ${err.message}`); } finally { setLoading(false); }
   };
 
@@ -228,8 +337,14 @@ function App() {
     if (!fileId) return;
     setProcessing(true); setResults([]); setServerOutputDir(''); setError(null); setCurrentProgress(0); setProgressMsg('CONNECTING...');
     setMaskInfo(null); setPropagateStatus(null); setTextBatchStatus(null);
+    setSelectedPaths(new Set()); setDupCandidates([]); setDupCount(0);
     const ws = new WebSocket(`${WS_BASE_URL}/ws/process/${fileId}`);
-    ws.onopen = () => ws.send(JSON.stringify({ fps, threshold, output_path: outputPath }));
+    ws.onopen = () => ws.send(JSON.stringify({
+      fps,
+      threshold,
+      output_path: outputPath,
+      crop: cropRect ? { x: cropRect.x, y: cropRect.y, width: cropRect.w, height: cropRect.h } : null,
+    }));
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'status' || data.type === 'progress') {
@@ -291,20 +406,32 @@ function App() {
   const handlePropagate = () => {
     if (!editingImage?.full_path || points.length === 0 || !serverOutputDir) return;
 
-    // frames_dir = parent directory of the clicked image
-    const parts = editingImage.full_path.split('/');
-    const fname = parts.pop()!;
-    const framesDir = parts.join('/');
-
-    // init_frame_idx = index of this frame among sorted frames in same dir
-    const siblings = results
-      .filter(r => r.full_path && r.full_path.startsWith(framesDir + '/'))
+    // Masking always targets the sharp/ bucket — blur and drop frames are
+    // excluded from reconstruction. The clicked frame may currently be in
+    // sharp/ (typical) or it may have just been re-classified; the points
+    // were drawn on its pixels regardless, so we still want to anchor at
+    // the corresponding sharp/ frame if it's there.
+    const framesDir = `${serverOutputDir}/sharp`;
+    const fname = editingImage.filename;
+    const sharpSiblings = results
+      .filter(r => classOf(r) === 'sharp')
       .map(r => r.filename)
       .sort();
-    const initFrameIdx = Math.max(0, siblings.indexOf(fname));
+    const initFrameIdx = Math.max(0, sharpSiblings.indexOf(fname));
+    if (sharpSiblings.length === 0) {
+      setError('No SHARP frames to propagate over. Reclassify some frames as SHARP first.');
+      return;
+    }
+    if (!sharpSiblings.includes(fname)) {
+      setError(
+        `The selected frame ${fname} is not in SHARP. Reclassify it as SHARP (press S) ` +
+        `or pick a sharp frame to anchor propagation, then try again.`
+      );
+      return;
+    }
 
     setPropagating(true);
-    setPropagateStatus({ current: 0, total: siblings.length, message: 'CONNECTING' });
+    setPropagateStatus({ current: 0, total: sharpSiblings.length, message: 'CONNECTING' });
 
     const ws = new WebSocket(`${WS_BASE_URL}/ws/segment-video`);
     ws.onopen = () => ws.send(JSON.stringify({
@@ -383,6 +510,132 @@ function App() {
     ws.onerror = () => { setError('TEXT_BATCH_WS_ERROR'); setTextBatchRunning(false); };
   };
 
+  // ------------------------------------------------- Bulk reclassification
+  const toggleSelected = (full_path?: string) => {
+    if (!full_path) return;
+    setSelectedPaths(prev => {
+      const next = new Set(prev);
+      if (next.has(full_path)) next.delete(full_path); else next.add(full_path);
+      return next;
+    });
+  };
+
+  const handleBulkReclassify = async (target: Classification) => {
+    if (selectedPaths.size === 0 || !serverOutputDir) return;
+    setBulkBusy(true);
+    try {
+      const paths = Array.from(selectedPaths);
+      const res = await axios.post(`${API_BASE_URL}/reclassify-bulk`, {
+        full_paths: paths,
+        target,
+        output_dir: serverOutputDir,
+      });
+      const movedByOldPath = new Map<string, { full_path: string; url: string | null }>();
+      // The backend keys results by basename only, so map by sequence: each
+      // success in `moved` corresponds to a path in `paths` order, minus
+      // failures. Walk both lists in tandem, skipping failed ones.
+      const failedSet = new Set((res.data.failed as Array<{ full_path: string }>).map(f => f.full_path));
+      let mi = 0;
+      for (const p of paths) {
+        if (failedSet.has(p)) continue;
+        const m = res.data.moved[mi++];
+        if (m) movedByOldPath.set(p, { full_path: m.full_path, url: m.url });
+      }
+      setResults(prev => prev.map(r => {
+        if (!r.full_path || !movedByOldPath.has(r.full_path)) return r;
+        const m = movedByOldPath.get(r.full_path)!;
+        return { ...r, full_path: m.full_path, url: m.url ?? r.url, manual_class: target };
+      }));
+      setSelectedPaths(new Set());
+      if (res.data.failed.length > 0) {
+        setError(`BULK_PARTIAL: ${res.data.failed.length} of ${paths.length} failed.`);
+      }
+    } catch (err: any) {
+      setError(`BULK_RECLASSIFY_ERROR: ${err.message}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  // ------------------------------------------------- Duplicate detection
+  const handleOpenDupDialog = () => { setDupOpen(true); };
+
+  const handleScanDuplicates = async () => {
+    if (!serverOutputDir) return;
+    setDupBusy(true);
+    setDupCandidates([]);
+    try {
+      const res = await axios.post(`${API_BASE_URL}/detect-duplicates`, {
+        scene_dir: serverOutputDir,
+        threshold: dupThreshold,
+        frames_subdir: 'sharp',
+      });
+      setDupCandidates(res.data.candidates || []);
+      setDupScanned(res.data.scanned || 0);
+    } catch (err: any) {
+      setError(`DUP_SCAN_ERROR: ${err.message}`);
+    } finally {
+      setDupBusy(false);
+    }
+  };
+
+  const handleApplyDuplicates = async () => {
+    if (!serverOutputDir || dupCandidates.length === 0) return;
+    setDupBusy(true);
+    try {
+      const filenames = dupCandidates.map(c => c.filename);
+      const res = await axios.post(`${API_BASE_URL}/apply-duplicates`, {
+        scene_dir: serverOutputDir,
+        filenames,
+      });
+      const movedFilenames = new Set((res.data.moved as Array<{ filename: string; full_path: string }>).map(m => m.filename));
+      const movedFullPathByName = new Map(
+        (res.data.moved as Array<{ filename: string; full_path: string }>).map(m => [m.filename, m.full_path])
+      );
+      setResults(prev => prev.map(r => {
+        if (!movedFilenames.has(r.filename)) return r;
+        const fp = movedFullPathByName.get(r.filename) ?? r.full_path;
+        // Tag with manual_class='dup' via type extension (no UI logic relies on
+        // it directly — the file location dictates which tab it shows up in).
+        return { ...r, full_path: fp, manual_class: 'dup' as Classification };
+      }));
+      setDupCount(prev => prev + res.data.moved_count);
+      setDupCandidates([]);
+    } catch (err: any) {
+      setError(`DUP_APPLY_ERROR: ${err.message}`);
+    } finally {
+      setDupBusy(false);
+    }
+  };
+
+  const handleRestoreDuplicates = async () => {
+    if (!serverOutputDir) return;
+    setDupBusy(true);
+    try {
+      const res = await axios.post(`${API_BASE_URL}/restore-duplicates`, {
+        scene_dir: serverOutputDir,
+      });
+      const restoredFilenames = new Set((res.data.restored as Array<{ filename: string; full_path: string }>).map(m => m.filename));
+      const restoredFullPathByName = new Map(
+        (res.data.restored as Array<{ filename: string; full_path: string }>).map(m => [m.filename, m.full_path])
+      );
+      setResults(prev => prev.map(r => {
+        if (!restoredFilenames.has(r.filename)) return r;
+        const fp = restoredFullPathByName.get(r.filename) ?? r.full_path;
+        // Restoring drops the manual_class so the auto sharp/blur logic kicks
+        // back in based on the score vs threshold.
+        const next = { ...r, full_path: fp, url: fp ? r.url : r.url };
+        delete (next as any).manual_class;
+        return next;
+      }));
+      setDupCount(0);
+    } catch (err: any) {
+      setError(`DUP_RESTORE_ERROR: ${err.message}`);
+    } finally {
+      setDupBusy(false);
+    }
+  };
+
   // --------------------------------------------------- Phase 3: mask info
   const refreshMaskInfo = async () => {
     if (!serverOutputDir) return;
@@ -415,25 +668,41 @@ function App() {
     }
   };
 
-  const isBlurryView = useCallback(
-    (r: ProcessResult) => (r.manual_class ? r.manual_class === 'blur' : r.score < threshold),
+  // Three-way classification view. `manual_class` overrides the auto label.
+  // Auto-labelled frames are sharp (score >= threshold) or blur (score < threshold).
+  // Drop is only ever set manually by the user.
+  const classOf = useCallback(
+    (r: ProcessResult): Classification => {
+      if (r.manual_class) return r.manual_class;
+      return r.score < threshold ? 'blur' : 'sharp';
+    },
     [threshold]
   );
-
   const analyticsData = useMemo(() => {
     if (results.length === 0) return null;
-    const sharp = results.filter(r => !isBlurryView(r));
-    const blur = results.filter(r => isBlurryView(r));
+    const sharp = results.filter(r => classOf(r) === 'sharp');
+    const blur  = results.filter(r => classOf(r) === 'blur');
+    const drop  = results.filter(r => classOf(r) === 'drop');
+    const dup   = results.filter(r => classOf(r) === 'dup');
     const avgAll = results.reduce((acc, curr) => acc + curr.score, 0) / results.length;
     const avgSharp = sharp.length > 0 ? sharp.reduce((acc, curr) => acc + curr.score, 0) / sharp.length : 0;
-    return { sharpCount: sharp.length, blurCount: blur.length, avgAll: parseFloat(avgAll.toFixed(2)), avgSharp: parseFloat(avgSharp.toFixed(2)) };
-  }, [results, isBlurryView]);
+    return {
+      sharpCount: sharp.length,
+      blurCount:  blur.length,
+      dropCount:  drop.length,
+      dupCount:   dup.length,
+      avgAll: parseFloat(avgAll.toFixed(2)),
+      avgSharp: parseFloat(avgSharp.toFixed(2)),
+    };
+  }, [results, classOf]);
 
   const filteredResults = useMemo(() => {
     if (tabValue === 0) return results;
-    if (tabValue === 1) return results.filter(r => !isBlurryView(r));
-    return results.filter(r => isBlurryView(r));
-  }, [results, isBlurryView, tabValue]);
+    if (tabValue === 1) return results.filter(r => classOf(r) === 'sharp');
+    if (tabValue === 2) return results.filter(r => classOf(r) === 'blur');
+    if (tabValue === 3) return results.filter(r => classOf(r) === 'drop');
+    return results.filter(r => classOf(r) === 'dup');
+  }, [results, classOf, tabValue]);
 
   const navigateImage = useCallback((direction: 1 | -1) => {
     if (!editingImage || filteredResults.length === 0) return;
@@ -446,7 +715,7 @@ function App() {
     setMaskUrl(null);
   }, [editingImage, filteredResults]);
 
-  const handleReclassify = async (target: 'sharp' | 'blur') => {
+  const handleReclassify = useCallback(async (target: Classification) => {
     if (!editingImage?.full_path || !serverOutputDir) return;
     try {
       const res = await axios.post(`${API_BASE_URL}/reclassify`, {
@@ -465,7 +734,7 @@ function App() {
     } catch (err: any) {
       setError(`RECLASSIFY_ERROR: ${err.message}`);
     }
-  };
+  }, [editingImage, serverOutputDir]);
 
   useEffect(() => {
     if (!isMaskEditorOpen) return;
@@ -473,12 +742,18 @@ function App() {
       const tgt = e.target as HTMLElement | null;
       if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
       if (propagating || isSegmenting) return;
+      // Modifier keys are passed through (e.g. Cmd+S for browser save).
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key.toLowerCase();
       if (e.key === 'ArrowRight') { e.preventDefault(); navigateImage(1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); navigateImage(-1); }
+      else if (k === 's') { e.preventDefault(); handleReclassify('sharp'); }
+      else if (k === 'b') { e.preventDefault(); handleReclassify('blur'); }
+      else if (k === 'd') { e.preventDefault(); handleReclassify('drop'); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isMaskEditorOpen, navigateImage, propagating, isSegmenting]);
+  }, [isMaskEditorOpen, navigateImage, propagating, isSegmenting, handleReclassify]);
 
   const renderTree = (node: any) => (
     <TreeItem key={node.path} itemId={node.path} label={
@@ -502,12 +777,15 @@ function App() {
         <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: '1px solid #E6E1D6', mb: 4, bgcolor: '#FFFFFF' }}>
           <Toolbar>
             <Typography variant="h6" color="primary" sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V4.0.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
+              VIDEO_TO_IMAGE_AI_PIPELINE <Chip label="V4.4.0" size="small" sx={{ ml: 1, height: 20, fontSize: '10px' }} />
             </Typography>
-            {metadata && (
+            {(metadata || serverInfo) && (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Typography variant="caption" color={metadata.ai_ready ? "success.main" : "error.main"} sx={{ fontWeight: 'bold' }}>
-                  {metadata.ai_ready ? "● SAM2_ONLINE" : "○ SAM2_OFFLINE"}
+                <Typography variant="caption" color={serverInfo?.ai_ready ? "success.main" : "error.main"} sx={{ fontWeight: 'bold' }}>
+                  {(() => {
+                    const tag = (serverInfo?.backend === 'sam3') ? 'SAM3' : 'SAM2';
+                    return serverInfo?.ai_ready ? `● ${tag}_ONLINE` : `○ ${tag}_OFFLINE`;
+                  })()}
                 </Typography>
                 <Typography variant="caption" color="success.main">● PIPELINE_READY</Typography>
               </Box>
@@ -516,10 +794,92 @@ function App() {
         </AppBar>
 
         <Container maxWidth="xl">
+          {/* ---------- Left sticky stage indicator ---------- */}
+          {/* Hidden on small screens (<lg) where vertical real estate matters
+              more than the navigator. Click a step to jump there. */}
+          <Box
+            sx={{
+              display: { xs: 'none', lg: 'flex' },
+              position: 'fixed',
+              left: 16,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              zIndex: 1100,
+              flexDirection: 'column',
+              gap: 1.5,
+              px: 1.5,
+              py: 2,
+              bgcolor: 'rgba(253, 252, 251, 0.92)',
+              border: '1px solid #E6E1D6',
+              borderRadius: 1,
+              boxShadow: 1,
+              backdropFilter: 'blur(4px)',
+            }}
+          >
+            <Typography variant="caption" sx={{ fontSize: '9px', fontWeight: 'bold', color: 'text.secondary', letterSpacing: 0.5 }}>
+              STAGE
+            </Typography>
+            {STAGES.map((s, i) => {
+              const active = activeStage === i;
+              const reachable = i < 3 || !!serverOutputDir; // [04] only after pipeline ran
+              return (
+                <Box
+                  key={s.key}
+                  onClick={() => reachable && scrollToStage(i)}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    cursor: reachable ? 'pointer' : 'not-allowed',
+                    opacity: reachable ? 1 : 0.4,
+                    px: 0.5,
+                    py: 0.5,
+                    borderRadius: 0.5,
+                    transition: 'background-color 120ms',
+                    '&:hover': reachable ? { bgcolor: '#F4F1EA' } : {},
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: '50%',
+                      flexShrink: 0,
+                      bgcolor: active ? '#4A4238' : 'transparent',
+                      border: '2px solid',
+                      borderColor: active ? '#4A4238' : '#D4CBB3',
+                      boxShadow: active ? '0 0 0 3px rgba(74, 66, 56, 0.15)' : 'none',
+                      transition: 'all 120ms',
+                    }}
+                  />
+                  <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        fontSize: '10px',
+                        fontWeight: active ? 'bold' : 'normal',
+                        color: active ? 'text.primary' : 'text.secondary',
+                        lineHeight: 1.1,
+                      }}
+                    >
+                      [{String(i + 1).padStart(2, '0')}] {s.label}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      sx={{ fontSize: '8px', color: 'text.secondary', lineHeight: 1.1, opacity: 0.8 }}
+                    >
+                      {s.hint}
+                    </Typography>
+                  </Box>
+                </Box>
+              );
+            })}
+          </Box>
+
           <Grid container spacing={3}>
             {/* Left Column: Input & Config */}
             <Grid item xs={12} md={4}>
-              <Paper sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB' }}>
+              <Paper ref={(el: HTMLElement | null) => { stageRefs.current[0] = el; }} sx={{ p: 3, mb: 3, bgcolor: '#FDFCFB', scrollMarginTop: 80 }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary">[01] INPUT_SOURCE</Typography>
                 <Box {...getRootProps()} sx={{ border: '2px dashed #D4CBB3', borderRadius: 1, p: 4, textAlign: 'center', cursor: 'pointer', bgcolor: isDragActive ? '#F4F1EA' : 'transparent', '&:hover': { borderColor: '#4A4238', bgcolor: '#F4F1EA' } }}>
                   <input {...getInputProps()} /><CloudUploadIcon sx={{ fontSize: 40, color: '#D4CBB3', mb: 1 }} />
@@ -547,19 +907,156 @@ function App() {
                     </Box>
                   </Box>
                 )}
+
+                {/* Crop region picker — drawn on the source video's first frame.
+                    Coordinates are stored in source-pixel space and forwarded
+                    to ws_process as `crop: {x,y,width,height}`. */}
+                {file && previewSrc && metadata && (
+                  <Box sx={{ mt: 2, p: 1.5, border: '1px solid #E6E1D6', bgcolor: '#FFFFFF' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                        CROP (optional)
+                      </Typography>
+                      <Box sx={{ display: 'flex', gap: 0.5 }}>
+                        <Button
+                          size="small"
+                          variant={cropMode ? 'contained' : 'outlined'}
+                          onClick={() => setCropMode(m => !m)}
+                          sx={{ fontSize: '9px', py: 0, minWidth: 60 }}
+                        >
+                          {cropMode ? 'DRAWING' : 'DRAW'}
+                        </Button>
+                        {cropRect && (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => { setCropRect(null); setCropMode(false); }}
+                            sx={{ fontSize: '9px', py: 0, minWidth: 50 }}
+                          >
+                            RESET
+                          </Button>
+                        )}
+                      </Box>
+                    </Box>
+                    <Box
+                      sx={{
+                        position: 'relative',
+                        width: '100%',
+                        userSelect: 'none',
+                        cursor: cropMode ? 'crosshair' : 'default',
+                        border: '1px solid #E6E1D6',
+                      }}
+                      onMouseDown={(e) => {
+                        if (!cropMode || !previewImgRef.current || !metadata) return;
+                        const rect = previewImgRef.current.getBoundingClientRect();
+                        const sx = (e.clientX - rect.left) / rect.width  * metadata.width;
+                        const sy = (e.clientY - rect.top)  / rect.height * metadata.height;
+                        setCropDrag({ x: sx, y: sy });
+                        setCropRect({ x: sx, y: sy, w: 0, h: 0 });
+                      }}
+                      onMouseMove={(e) => {
+                        if (!cropMode || !cropDrag || !previewImgRef.current || !metadata) return;
+                        const rect = previewImgRef.current.getBoundingClientRect();
+                        const sx = (e.clientX - rect.left) / rect.width  * metadata.width;
+                        const sy = (e.clientY - rect.top)  / rect.height * metadata.height;
+                        const x = Math.max(0, Math.min(cropDrag.x, sx));
+                        const y = Math.max(0, Math.min(cropDrag.y, sy));
+                        const w = Math.min(metadata.width  - x, Math.abs(sx - cropDrag.x));
+                        const h = Math.min(metadata.height - y, Math.abs(sy - cropDrag.y));
+                        setCropRect({ x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) });
+                      }}
+                      onMouseUp={() => {
+                        setCropDrag(null);
+                        setCropMode(false);
+                        // Tiny drags are treated as accidental — discard.
+                        if (cropRect && (cropRect.w < 8 || cropRect.h < 8)) setCropRect(null);
+                      }}
+                      onMouseLeave={() => { setCropDrag(null); }}
+                    >
+                      <img
+                        ref={previewImgRef}
+                        src={previewSrc}
+                        alt="source preview"
+                        style={{ width: '100%', display: 'block', pointerEvents: 'none' }}
+                      />
+                      {cropRect && cropRect.w > 0 && cropRect.h > 0 && (
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            border: '2px solid #4A4238',
+                            bgcolor: 'rgba(74, 66, 56, 0.15)',
+                            pointerEvents: 'none',
+                            left: `${(cropRect.x / metadata.width) * 100}%`,
+                            top:  `${(cropRect.y / metadata.height) * 100}%`,
+                            width:  `${(cropRect.w / metadata.width) * 100}%`,
+                            height: `${(cropRect.h / metadata.height) * 100}%`,
+                          }}
+                        />
+                      )}
+                    </Box>
+                    <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontSize: '10px', color: 'text.secondary' }}>
+                      {cropRect && cropRect.w > 0 && cropRect.h > 0
+                        ? `Selected: ${cropRect.w}×${cropRect.h} @ (${cropRect.x}, ${cropRect.y}) px`
+                        : cropMode ? 'Drag on the preview to define the crop region.' : 'No crop — full frame will be extracted.'}
+                    </Typography>
+                  </Box>
+                )}
               </Paper>
 
-              <Paper sx={{ p: 3, bgcolor: '#FDFCFB' }}>
+              <Paper ref={(el: HTMLElement | null) => { stageRefs.current[1] = el; }} sx={{ p: 3, bgcolor: '#FDFCFB', scrollMarginTop: 80 }}>
                 <Typography variant="subtitle2" gutterBottom color="textSecondary">[02] PIPELINE_CONFIGURATION</Typography>
                 <Box sx={{ mb: 3 }}>
-                  <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1 }}><BrainIcon sx={{ fontSize: 16, mr: 0.5 }} /> ENGINE: SAM_2.1_MODEL</Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 1, gap: 1 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center' }}>
+                      <BrainIcon sx={{ fontSize: 16, mr: 0.5 }} />
+                      ENGINE: {backendOf(samModel) === 'sam3' ? 'SAM_3_MODEL' : 'SAM_2.1_MODEL'}
+                    </Typography>
+                    {serverInfo?.device && (
+                      <Chip
+                        label={`device: ${serverInfo.device.toUpperCase()}`}
+                        size="small"
+                        color={isCudaHost ? 'success' : 'default'}
+                        sx={{ height: 18, fontSize: '9px' }}
+                      />
+                    )}
+                  </Box>
                   <FormControl fullWidth size="small">
                     <Select value={samModel} onChange={(e) => handleSamModelChange(e.target.value)} disabled={isModelLoading}>
-                      {SAM2_MODELS.map(m => (
-                        <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
-                      ))}
+                      {MODELS.map(m => {
+                        const requiresCuda = m.backend === 'sam3';
+                        const blocked = requiresCuda && !isCudaHost;
+                        return (
+                          <MenuItem
+                            key={m.value}
+                            value={m.value}
+                            disabled={blocked}
+                            sx={{ opacity: blocked ? 0.5 : 1 }}
+                          >
+                            {m.label}
+                            {blocked && (
+                              <Chip
+                                label="CUDA only"
+                                size="small"
+                                color="warning"
+                                sx={{ ml: 1, height: 16, fontSize: '9px' }}
+                              />
+                            )}
+                          </MenuItem>
+                        );
+                      })}
                     </Select>
                   </FormControl>
+                  {!isCudaHost && (
+                    <Typography
+                      variant="caption"
+                      sx={{ display: 'block', mt: 0.5, fontSize: '10px', color: 'warning.dark' }}
+                    >
+                      ⚠ SAM 3 / SAM 3.1 require CUDA. They are disabled on{' '}
+                      {(serverInfo?.device ?? 'this').toUpperCase()} hosts because their{' '}
+                      <code>triton</code> dependency has no macOS / MPS / CPU build.
+                      Use SAM 2.1 here, or deploy this server on a CUDA host.
+                    </Typography>
+                  )}
                   {isModelLoading && <LinearProgress sx={{ mt: 1 }} />}
                 </Box>
                 <Box sx={{ mb: 3 }}>
@@ -591,20 +1088,61 @@ function App() {
                     GUIDE: {threshold < 50 ? "Lenient (Blurry ok)" : threshold < 150 ? "Moderate (Standard)" : "Strict (Sharp only)"}
                   </Typography>
                 </Box>
-                <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238', mb: 2 }} onClick={handleProcess} disabled={!fileId || processing || isModelLoading}>
+                <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing || isModelLoading}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'START_PIPELINE'}
                 </Button>
-                {results.length > 0 && (
-                  <Button fullWidth variant="outlined" startIcon={syncing ? <CircularProgress size={16}/> : <SyncIcon />} onClick={handleSyncFolders} disabled={syncing}>
-                    {syncing ? 'SYNCING...' : 'APPLY & SYNC FOLDERS'}
-                  </Button>
-                )}
+                {/* APPLY & SYNC FOLDERS is rendered under the classified frames
+                    grid (section [03]) so the user can re-apply the threshold
+                    after reviewing the actual sharp/blur split. */}
               </Paper>
             </Grid>
 
             {/* Main Content Area */}
             <Grid item xs={12} md={8}>
-              <Paper sx={{ p: 3, minHeight: '85vh', borderLeft: '4px solid #4A4238' }}>
+              <Paper ref={(el: HTMLElement | null) => { stageRefs.current[2] = el; }} sx={{ p: 3, minHeight: '85vh', borderLeft: '4px solid #4A4238', scrollMarginTop: 80 }}>
+                {/* Toolbar: select mode + duplicate-detection controls.
+                    Only meaningful after the pipeline has produced results. */}
+                {results.length > 0 && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, flexWrap: 'wrap' }}>
+                    <Button
+                      size="small"
+                      variant={selectMode ? 'contained' : 'outlined'}
+                      onClick={() => {
+                        setSelectMode(s => !s);
+                        if (selectMode) setSelectedPaths(new Set());
+                      }}
+                      sx={{ minWidth: 100 }}
+                    >
+                      {selectMode ? 'EXIT SELECT' : 'SELECT MODE'}
+                    </Button>
+                    {selectMode && (
+                      <Typography variant="caption" sx={{ fontSize: '11px', fontWeight: 'bold', color: 'text.secondary' }}>
+                        {selectedPaths.size} selected
+                      </Typography>
+                    )}
+                    <Box sx={{ flexGrow: 1 }} />
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={handleOpenDupDialog}
+                      disabled={dupBusy}
+                    >
+                      DETECT DUPLICATES
+                    </Button>
+                    {(dupCount > 0 || (analyticsData?.dupCount ?? 0) > 0) && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="warning"
+                        onClick={handleRestoreDuplicates}
+                        disabled={dupBusy}
+                      >
+                        RESTORE DUP ({analyticsData?.dupCount ?? dupCount})
+                      </Button>
+                    )}
+                  </Box>
+                )}
+
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                   <Typography variant="subtitle2" color="textSecondary">[03] BUFFER & ANALYTICS</Typography>
                   {analyticsData && (
@@ -652,21 +1190,58 @@ function App() {
                     <Tab label={`ALL (${results.length})`} sx={{ fontSize: '11px' }} />
                     <Tab label={`SHARP (${analyticsData?.sharpCount || 0})`} sx={{ fontSize: '11px' }} />
                     <Tab label={`BLUR (${analyticsData?.blurCount || 0})`} sx={{ fontSize: '11px' }} />
+                    <Tab label={`DROP (${analyticsData?.dropCount || 0})`} sx={{ fontSize: '11px' }} />
+                    <Tab label={`DUP (${analyticsData?.dupCount || 0})`} sx={{ fontSize: '11px' }} />
                   </Tabs>
                 </Box>
 
                 <Grid container spacing={1.5}>
                   {results.length > 0 ? (
                     filteredResults.map((res, index) => {
-                      const blurry = isBlurryView(res);
+                      const cls = classOf(res);
+                      const dimmed = cls !== 'sharp';
+                      const chipColor: 'success' | 'error' | 'default' | 'warning' | 'info' =
+                        cls === 'sharp' ? 'success'
+                          : cls === 'blur' ? 'error'
+                            : cls === 'dup' ? 'info'
+                              : 'default';
+                      const baseLetter = cls === 'sharp' ? 'S'
+                        : cls === 'blur' ? 'B'
+                          : cls === 'dup' ? 'U'
+                            : 'D';
+                      const chipLabel = res.manual_class ? `${baseLetter}*` : baseLetter;
+                      const selected = !!res.full_path && selectedPaths.has(res.full_path);
+                      const opacity = dimmed
+                        ? (cls === 'drop' ? 0.4 : cls === 'dup' ? 0.5 : 0.6)
+                        : 1;
                       return (
                         <Grid item xs={6} sm={4} md={3} lg={2.4} key={index}>
-                          <Card variant="outlined" onClick={() => handleImageClick(res)} sx={{ cursor: 'pointer', opacity: blurry ? 0.6 : 1, '&:hover': { borderColor: 'primary.main' } }}>
-                            <CardMedia component="img" height="100" image={`${API_BASE_URL}${res.url}`} sx={{ filter: blurry ? 'grayscale(80%)' : 'none' }} />
+                          <Card
+                            variant="outlined"
+                            onClick={() => {
+                              if (selectMode) toggleSelected(res.full_path);
+                              else handleImageClick(res);
+                            }}
+                            sx={{
+                              cursor: 'pointer',
+                              opacity,
+                              position: 'relative',
+                              borderColor: selected ? 'primary.main' : undefined,
+                              borderWidth: selected ? 2 : 1,
+                              boxShadow: selected ? '0 0 0 2px rgba(74, 66, 56, 0.25)' : undefined,
+                              '&:hover': { borderColor: 'primary.main' },
+                            }}
+                          >
+                            {selectMode && (
+                              <Box sx={{ position: 'absolute', top: 4, left: 4, zIndex: 2, bgcolor: 'rgba(255,255,255,0.85)', borderRadius: '50%' }}>
+                                <Checkbox size="small" checked={selected} sx={{ p: 0.25 }} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(res.full_path)} />
+                              </Box>
+                            )}
+                            <CardMedia component="img" height="100" image={`${API_BASE_URL}${res.url}`} sx={{ filter: dimmed ? 'grayscale(80%)' : 'none' }} />
                             <CardContent sx={{ p: 0.8 }}>
                               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Typography variant="caption" sx={{ fontSize: '9px', fontWeight: 'bold' }}>S:{res.score}</Typography>
-                                <Chip label={res.manual_class ? (blurry ? 'B*' : 'S*') : (blurry ? 'B' : 'S')} size="small" color={blurry ? 'error' : 'success'} sx={{ height: 12, fontSize: '7px', minWidth: 16 }} />
+                                <Chip label={chipLabel} size="small" color={chipColor} sx={{ height: 12, fontSize: '7px', minWidth: 16 }} />
                               </Box>
                             </CardContent>
                           </Card>
@@ -675,13 +1250,37 @@ function App() {
                     })
                   ) : !processing && <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '400px', opacity: 0.2 }}><ImageIcon sx={{ fontSize: 64 }} /></Box>}
                 </Grid>
+
+                {/* Footer: re-apply threshold AFTER reviewing the sharp/blur
+                    split. Hidden until the pipeline has produced results. */}
+                {results.length > 0 && (
+                  <Box sx={{ mt: 3, pt: 2, borderTop: '1px dashed #E6E1D6', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
+                    <Typography variant="caption" color="textSecondary" sx={{ flexGrow: 1, fontSize: '11px' }}>
+                      Adjusted the threshold? Re-apply it to physically move frames between sharp/ and blur/.
+                      <br />
+                      <Box component="span" sx={{ opacity: 0.7 }}>
+                        Frames already moved to <code>drop/</code> are preserved.
+                      </Box>
+                    </Typography>
+                    <Button
+                      variant="outlined"
+                      startIcon={syncing ? <CircularProgress size={16}/> : <SyncIcon />}
+                      onClick={handleSyncFolders}
+                      disabled={syncing || processing}
+                      sx={{ minWidth: 220 }}
+                    >
+                      {syncing ? 'SYNCING...' : 'APPLY & SYNC FOLDERS'}
+                    </Button>
+                  </Box>
+                )}
               </Paper>
 
               {/* ======================================================== */}
-              {/* [04] RECONSTRUCTION MASKING (SAM 2.1 + Grounded-SAM 2)    */}
+              {/* [04] RECONSTRUCTION MASKING (SAM 2.1 + Grounded-SAM 2 /   */}
+              {/*       SAM 3 / SAM 3.1 native text)                        */}
               {/* ======================================================== */}
               {serverOutputDir && (
-                <Paper sx={{ p: 3, mt: 3, bgcolor: '#FDFCFB' }}>
+                <Paper ref={(el: HTMLElement | null) => { stageRefs.current[3] = el; }} sx={{ p: 3, mt: 3, bgcolor: '#FDFCFB', scrollMarginTop: 80 }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
                     <Typography variant="subtitle2" color="textSecondary">
                       [04] RECONSTRUCTION_MASKING
@@ -730,7 +1329,7 @@ function App() {
                     <Grid item xs={12} md={6}>
                       <Box sx={{ border: '1px solid #E6E1D6', p: 2, height: '100%' }}>
                         <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', mb: 1 }}>
-                          <TextIcon sx={{ fontSize: 14, mr: 0.5 }} /> TEXT_PROMPT_MASK (Grounded-SAM 2)
+                          <TextIcon sx={{ fontSize: 14, mr: 0.5 }} /> TEXT_PROMPT_MASK ({backendOf(samModel) === 'sam3' ? 'SAM 3 native' : 'Grounded-SAM 2'})
                         </Typography>
                         <TextField
                           size="small" fullWidth
@@ -833,10 +1432,112 @@ function App() {
         <DialogActions><Button onClick={() => setIsDialogOpen(false)}>CANCEL</Button><Button onClick={handleCreateFolder} variant="contained">CREATE</Button></DialogActions>
       </Dialog>
 
+      {/* Sticky bulk-action bar (visible only in select mode with selection) */}
+      {selectMode && selectedPaths.size > 0 && (
+        <Box
+          sx={{
+            position: 'fixed',
+            bottom: 16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 1200,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.5,
+            px: 2.5,
+            py: 1.5,
+            bgcolor: '#FDFCFB',
+            border: '1px solid #4A4238',
+            borderRadius: 1,
+            boxShadow: 4,
+          }}
+        >
+          <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+            {selectedPaths.size} selected →
+          </Typography>
+          <Button size="small" variant="contained" color="success" disabled={bulkBusy} onClick={() => handleBulkReclassify('sharp')}>SHARP</Button>
+          <Button size="small" variant="contained" color="error"   disabled={bulkBusy} onClick={() => handleBulkReclassify('blur')}>BLUR</Button>
+          <Button size="small" variant="contained" color="inherit" disabled={bulkBusy} onClick={() => handleBulkReclassify('drop')}>DROP</Button>
+          <Box sx={{ width: 1, height: 24, bgcolor: '#E6E1D6', mx: 0.5 }} />
+          <Button size="small" variant="text" disabled={bulkBusy} onClick={() => setSelectedPaths(new Set())}>Clear</Button>
+          {bulkBusy && <CircularProgress size={16} sx={{ ml: 0.5 }} />}
+        </Box>
+      )}
+
+      {/* Duplicate detection dialog */}
+      <Dialog open={dupOpen} onClose={() => !dupBusy && setDupOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ fontSize: '14px', fontWeight: 'bold' }}>
+          DETECT_DUPLICATES — perceptual-hash near-duplicate finder
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 2, fontSize: '11px' }}>
+            Scans <code>&lt;scene&gt;/sharp/</code> with an 8×8 dHash. Frames within
+            the chosen Hamming distance of the previous kept anchor are flagged.
+            Apply moves them to <code>&lt;scene&gt;/dup/</code> (reversible —
+            click <b>RESTORE DUP</b> on the [03] toolbar to bring them back).
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+            <Typography variant="caption" sx={{ minWidth: 90, fontWeight: 'bold' }}>
+              Threshold: {dupThreshold}
+            </Typography>
+            <Slider
+              size="small"
+              value={dupThreshold}
+              min={0}
+              max={20}
+              step={1}
+              marks={[{ value: 0, label: '0 (identical)' }, { value: 5, label: '5' }, { value: 10, label: '10' }, { value: 20, label: '20' }]}
+              onChange={(_, v) => setDupThreshold(v as number)}
+              sx={{ flexGrow: 1 }}
+            />
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+            <Button variant="outlined" size="small" disabled={dupBusy || !serverOutputDir} onClick={handleScanDuplicates}>
+              {dupBusy ? <CircularProgress size={16} /> : 'SCAN'}
+            </Button>
+            <Typography variant="caption" sx={{ alignSelf: 'center', color: 'text.secondary', fontSize: '11px' }}>
+              {dupCandidates.length > 0 ? `${dupCandidates.length} candidates / ${dupScanned} scanned` : 'No scan yet'}
+            </Typography>
+          </Box>
+          {dupCandidates.length > 0 && (
+            <Box sx={{ maxHeight: 360, overflowY: 'auto', border: '1px solid #E6E1D6' }}>
+              <Grid container>
+                {dupCandidates.map((c) => (
+                  <Grid item xs={6} sm={4} md={3} key={c.full_path}>
+                    <Card variant="outlined" sx={{ m: 0.5 }}>
+                      {c.url && <CardMedia component="img" height="80" image={`${API_BASE_URL}${c.url}`} />}
+                      <CardContent sx={{ p: 0.75 }}>
+                        <Typography variant="caption" sx={{ fontSize: '9px', display: 'block', fontWeight: 'bold' }}>
+                          {c.filename}
+                        </Typography>
+                        <Typography variant="caption" sx={{ fontSize: '8px', color: 'text.secondary', display: 'block' }}>
+                          ≈ {c.anchor_filename} (d={c.distance})
+                        </Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDupOpen(false)} disabled={dupBusy}>CLOSE</Button>
+          <Button
+            variant="contained"
+            color="primary"
+            disabled={dupBusy || dupCandidates.length === 0}
+            onClick={async () => { await handleApplyDuplicates(); }}
+          >
+            APPLY → MOVE TO DUP
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Masking Editor Dialog */}
       <Dialog open={isMaskEditorOpen} onClose={() => !propagating && setIsMaskEditorOpen(false)} maxWidth="lg" fullWidth>
         <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          AI MASKING EDITOR (SAM 2.1)
+          AI MASKING EDITOR ({backendOf(samModel) === 'sam3' ? (samModel === 'sam3.1' ? 'SAM 3.1' : 'SAM 3') : 'SAM 2.1'})
           <Box>
             <Button size="small" startIcon={<ClearIcon />} onClick={() => { setPoints([]); setMaskUrl(null); }} disabled={propagating}>Reset</Button>
             <IconButton onClick={() => setIsMaskEditorOpen(false)} disabled={propagating}><ClearIcon /></IconButton>
@@ -941,26 +1642,40 @@ function App() {
             >
               <ChevronRightIcon />
             </IconButton>
-            {editingImage && serverOutputDir && (
-              <ButtonGroup size="small" variant="outlined" sx={{ ml: 2 }}>
-                <Button
-                  variant={!isBlurryView(editingImage) ? 'contained' : 'outlined'}
-                  color="success"
-                  onClick={() => handleReclassify('sharp')}
-                  disabled={propagating || isSegmenting}
-                >
-                  SHARP
-                </Button>
-                <Button
-                  variant={isBlurryView(editingImage) ? 'contained' : 'outlined'}
-                  color="error"
-                  onClick={() => handleReclassify('blur')}
-                  disabled={propagating || isSegmenting}
-                >
-                  BLUR
-                </Button>
-              </ButtonGroup>
-            )}
+            {editingImage && serverOutputDir && (() => {
+              const cls = classOf(editingImage);
+              return (
+                <ButtonGroup size="small" variant="outlined" sx={{ ml: 2 }}>
+                  <Button
+                    variant={cls === 'sharp' ? 'contained' : 'outlined'}
+                    color="success"
+                    onClick={() => handleReclassify('sharp')}
+                    disabled={propagating || isSegmenting}
+                    title="Mark as SHARP (shortcut: S)"
+                  >
+                    SHARP <Box component="span" sx={{ ml: 0.5, opacity: 0.6, fontSize: '9px' }}>(S)</Box>
+                  </Button>
+                  <Button
+                    variant={cls === 'blur' ? 'contained' : 'outlined'}
+                    color="error"
+                    onClick={() => handleReclassify('blur')}
+                    disabled={propagating || isSegmenting}
+                    title="Mark as BLUR (shortcut: B)"
+                  >
+                    BLUR <Box component="span" sx={{ ml: 0.5, opacity: 0.6, fontSize: '9px' }}>(B)</Box>
+                  </Button>
+                  <Button
+                    variant={cls === 'drop' ? 'contained' : 'outlined'}
+                    color="inherit"
+                    onClick={() => handleReclassify('drop')}
+                    disabled={propagating || isSegmenting}
+                    title="Mark as DROP — excluded from masking and reconstruction (shortcut: D)"
+                  >
+                    DROP <Box component="span" sx={{ ml: 0.5, opacity: 0.6, fontSize: '9px' }}>(D)</Box>
+                  </Button>
+                </ButtonGroup>
+              );
+            })()}
           </Box>
           <Box sx={{ display: 'flex', gap: 1 }}>
             <Button onClick={() => setIsMaskEditorOpen(false)} disabled={propagating}>Close</Button>
