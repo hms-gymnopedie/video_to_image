@@ -204,6 +204,23 @@ function App() {
   const [cropDrag, setCropDrag] = useState<{ x: number; y: number } | null>(null);
   const previewImgRef = useRef<HTMLImageElement>(null);
 
+  // Aspect-ratio lock for the crop selection. "source" matches the input video
+  // exactly so SfM intrinsics stay consistent. "free" lets the user draw any
+  // rectangle. Numeric ratios are width / height.
+  type CropAspect = 'source' | 'free' | '1:1' | '4:3' | '16:9' | '9:16';
+  const [cropAspect, setCropAspect] = useState<CropAspect>('source');
+  const cropAspectValue = useMemo<number | null>(() => {
+    if (cropAspect === 'free') return null;
+    if (cropAspect === 'source') return metadata?.width && metadata?.height
+      ? metadata.width / metadata.height
+      : null;
+    if (cropAspect === '1:1')  return 1;
+    if (cropAspect === '4:3')  return 4 / 3;
+    if (cropAspect === '16:9') return 16 / 9;
+    if (cropAspect === '9:16') return 9 / 16;
+    return null;
+  }, [cropAspect, metadata]);
+
   // ---- COMBINE mode + mask preview viewer ----
   const [combineMode, setCombineMode] = useState(true);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -242,6 +259,26 @@ function App() {
     const t = setInterval(fetchServerInfo, 5000);
     return () => clearInterval(t);
   }, []);
+
+  // Re-fit an existing crop rectangle when the aspect lock changes. Anchored
+  // at the rect's top-left, taking the larger of (w, h*aspect) so the user
+  // doesn't lose area unnecessarily, then clamped to the source bounds.
+  useEffect(() => {
+    if (!cropRect || !metadata) return;
+    const ax = cropAspectValue;
+    if (ax === null || ax <= 0) return;
+    const cur = cropRect.w / Math.max(1, cropRect.h);
+    if (Math.abs(cur - ax) < 1e-3) return;
+    let w = Math.max(cropRect.w, cropRect.h * ax);
+    let h = w / ax;
+    // Clamp into image starting at (x, y).
+    const maxW = metadata.width  - cropRect.x;
+    const maxH = metadata.height - cropRect.y;
+    if (w > maxW) { w = maxW; h = w / ax; }
+    if (h > maxH) { h = maxH; w = h * ax; }
+    setCropRect({ x: cropRect.x, y: cropRect.y, w: Math.round(w), h: Math.round(h) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cropAspect]);
 
   // Track which section the user is currently looking at. Uses
   // IntersectionObserver against a horizontal band centered on the viewport
@@ -913,11 +950,28 @@ function App() {
                     to ws_process as `crop: {x,y,width,height}`. */}
                 {file && previewSrc && metadata && (
                   <Box sx={{ mt: 2, p: 1.5, border: '1px solid #E6E1D6', bgcolor: '#FFFFFF' }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, flexWrap: 'wrap', gap: 0.5 }}>
                       <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
                         CROP (optional)
                       </Typography>
-                      <Box sx={{ display: 'flex', gap: 0.5 }}>
+                      <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <FormControl size="small" sx={{ minWidth: 90 }}>
+                          <Select
+                            value={cropAspect}
+                            onChange={(e) => setCropAspect(e.target.value as CropAspect)}
+                            sx={{ fontSize: '10px', height: 24, '& .MuiSelect-select': { py: 0.25 } }}
+                            title="Aspect ratio lock"
+                          >
+                            <MenuItem value="source" sx={{ fontSize: '11px' }}>
+                              Source ({metadata ? `${metadata.width}:${metadata.height}` : '?'})
+                            </MenuItem>
+                            <MenuItem value="free"  sx={{ fontSize: '11px' }}>Free</MenuItem>
+                            <MenuItem value="1:1"   sx={{ fontSize: '11px' }}>1:1</MenuItem>
+                            <MenuItem value="4:3"   sx={{ fontSize: '11px' }}>4:3</MenuItem>
+                            <MenuItem value="16:9"  sx={{ fontSize: '11px' }}>16:9</MenuItem>
+                            <MenuItem value="9:16"  sx={{ fontSize: '11px' }}>9:16</MenuItem>
+                          </Select>
+                        </FormControl>
                         <Button
                           size="small"
                           variant={cropMode ? 'contained' : 'outlined'}
@@ -959,11 +1013,43 @@ function App() {
                         const rect = previewImgRef.current.getBoundingClientRect();
                         const sx = (e.clientX - rect.left) / rect.width  * metadata.width;
                         const sy = (e.clientY - rect.top)  / rect.height * metadata.height;
-                        const x = Math.max(0, Math.min(cropDrag.x, sx));
-                        const y = Math.max(0, Math.min(cropDrag.y, sy));
-                        const w = Math.min(metadata.width  - x, Math.abs(sx - cropDrag.x));
-                        const h = Math.min(metadata.height - y, Math.abs(sy - cropDrag.y));
-                        setCropRect({ x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) });
+                        const ax = cropAspectValue;
+
+                        // Raw drag deltas (signed → direction; abs → magnitude).
+                        const dx = sx - cropDrag.x;
+                        const dy = sy - cropDrag.y;
+                        const sgnX = dx < 0 ? -1 : 1;
+                        const sgnY = dy < 0 ? -1 : 1;
+                        let absW = Math.abs(dx);
+                        let absH = Math.abs(dy);
+
+                        // 1) Enforce aspect ratio relative to the drag anchor.
+                        if (ax !== null && ax > 0) {
+                          if (absW / Math.max(1, absH) > ax) absW = absH * ax;
+                          else                                absH = absW / ax;
+                        }
+
+                        // 2) Clamp into source bounds. Anchor stays at cropDrag,
+                        //    so shrinking in one direction shrinks both axes when
+                        //    a ratio is locked — apply max-extent first.
+                        const maxW = sgnX < 0 ? cropDrag.x : metadata.width  - cropDrag.x;
+                        const maxH = sgnY < 0 ? cropDrag.y : metadata.height - cropDrag.y;
+                        if (ax !== null && ax > 0) {
+                          // Pick the limiting axis and recompute the other.
+                          if (absW > maxW) { absW = maxW; absH = absW / ax; }
+                          if (absH > maxH) { absH = maxH; absW = absH * ax; }
+                        } else {
+                          absW = Math.min(absW, maxW);
+                          absH = Math.min(absH, maxH);
+                        }
+
+                        // 3) Position (top-left) once magnitudes are settled.
+                        const x = sgnX < 0 ? cropDrag.x - absW : cropDrag.x;
+                        const y = sgnY < 0 ? cropDrag.y - absH : cropDrag.y;
+                        setCropRect({
+                          x: Math.round(x), y: Math.round(y),
+                          w: Math.round(absW), h: Math.round(absH),
+                        });
                       }}
                       onMouseUp={() => {
                         setCropDrag(null);
@@ -995,9 +1081,17 @@ function App() {
                       )}
                     </Box>
                     <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontSize: '10px', color: 'text.secondary' }}>
-                      {cropRect && cropRect.w > 0 && cropRect.h > 0
-                        ? `Selected: ${cropRect.w}×${cropRect.h} @ (${cropRect.x}, ${cropRect.y}) px`
-                        : cropMode ? 'Drag on the preview to define the crop region.' : 'No crop — full frame will be extracted.'}
+                      {cropRect && cropRect.w > 0 && cropRect.h > 0 ? (
+                        <>
+                          Selected: {cropRect.w}×{cropRect.h} @ ({cropRect.x}, {cropRect.y}) px
+                          {' · '}
+                          {cropAspect === 'free'
+                            ? `aspect ${(cropRect.w / cropRect.h).toFixed(3)} (free)`
+                            : `aspect locked: ${cropAspect}${cropAspect === 'source' && metadata ? ` (${metadata.width}:${metadata.height})` : ''}`}
+                        </>
+                      ) : cropMode
+                        ? `Drag on the preview to define the crop region. Aspect: ${cropAspect}${cropAspect === 'source' && metadata ? ` (${metadata.width}:${metadata.height})` : ''}.`
+                        : 'No crop — full frame will be extracted.'}
                     </Typography>
                   </Box>
                 )}

@@ -20,10 +20,14 @@ pipelines.
 
 ### Extraction & quality filtering
 - Drag-and-drop video upload with metadata probe (resolution, FPS, duration, aspect).
-- **Source-video crop.** After upload, the dashboard fetches the first frame
-  via `GET /preview-frame/{file_id}` and lets the user drag a rectangle on it.
-  The selection is sent as `crop = {x, y, width, height}` and applied as an
-  FFmpeg `crop=` filter during extraction. Optional — leave empty for full-frame.
+- **Source-video crop with aspect-ratio lock.** After upload, the dashboard
+  fetches the first frame via `GET /preview-frame/{file_id}` and lets the
+  user drag a rectangle on it. The aspect-ratio dropdown defaults to
+  `Source` (matches the input video exactly so camera intrinsics stay
+  consistent for SfM), with `Free`, `1:1`, `4:3`, `16:9`, `9:16` options.
+  The selection is sent as `crop = {x, y, width, height}` and applied as
+  an FFmpeg `crop=` filter during extraction. Optional — leave empty for
+  full-frame.
 - FFmpeg frame extraction at a user-chosen FPS.
 - Per-frame Laplacian-variance blur score.
 - Auto-split into `sharp/` and `blur/` folders with a live threshold slider.

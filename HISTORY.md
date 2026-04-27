@@ -16,6 +16,11 @@
 - **Added:** Source-video region-of-interest cropping in `[01] INPUT_SOURCE`.
   - Backend `GET /preview-frame/{file_id}` returns the first frame of the uploaded video as JPEG (cached in `backend/masks/preview/`).
   - `[01]` shows the preview image with a `DRAW / RESET` toggle. Drag a rectangle on the preview to define the crop in source-pixel space.
+  - **Aspect-ratio lock.** Default is `Source` (the input video's exact ratio,
+    so SfM camera intrinsics stay consistent). Dropdown also offers `Free`,
+    `1:1`, `4:3`, `16:9`, `9:16`. The drag handler enforces the locked aspect
+    while clamping into source bounds; switching the lock re-fits an existing
+    crop rectangle anchored at its top-left.
   - `WS /ws/process/{file_id}` accepts an optional `crop: {x, y, width, height}` payload and applies an FFmpeg `crop=W:H:X:Y` filter after the FPS filter. Omitted or zero-sized crop = full-frame extraction (unchanged behavior).
   - Crop selection survives between START_PIPELINE runs of the same upload until the user explicitly resets or uploads a new video.
 - **Updated:** Versioning to V4.4.0.
