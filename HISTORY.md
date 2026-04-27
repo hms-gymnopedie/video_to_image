@@ -23,6 +23,21 @@
     crop rectangle anchored at its top-left.
   - `WS /ws/process/{file_id}` accepts an optional `crop: {x, y, width, height}` payload and applies an FFmpeg `crop=W:H:X:Y` filter after the FPS filter. Omitted or zero-sized crop = full-frame extraction (unchanged behavior).
   - Crop selection survives between START_PIPELINE runs of the same upload until the user explicitly resets or uploads a new video.
+- **Fixed:** Mask editor navigation regression after S/B/D reclassification.
+  - The `positionInFiltered` helper now finds the editing image by `filename`
+    (stable across reclassifications) with a "nearest by filename" fallback
+    when the frame has just left the active tab. The position counter no
+    longer resets to `1 / N`, and arrow-key navigation continues from where
+    the user left off.
+  - When the editing image gets filtered out (e.g. you mark a SHARP frame as
+    BLUR while on the SHARP tab), the editor auto-advances to the next
+    surviving frame in filename order so the culling queue keeps flowing.
+- **Improved:** Optimistic UI update on `S`/`B`/`D` shortcuts. The thumbnail
+  and mask editor now reflect the new bucket instantly; the `POST /reclassify`
+  call runs in the background and reconciles with the server response (or
+  reverts on failure). Bulk reclassify (`/reclassify-bulk`) uses the same
+  pattern. This eliminates the perceived input lag where the backend GET
+  appeared immediately but the UI waited for the JSON round-trip.
 - **Updated:** Versioning to V4.4.0.
 
 ## [2026-04-27] Update V4.3.0 — UX: stage navigator + SYNC relocation

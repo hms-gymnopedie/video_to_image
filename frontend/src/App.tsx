@@ -559,35 +559,71 @@ function App() {
 
   const handleBulkReclassify = async (target: Classification) => {
     if (selectedPaths.size === 0 || !serverOutputDir) return;
+    if (target === 'dup') return;   // dup goes through the duplicate-detection workflow
+
     setBulkBusy(true);
+    const paths = Array.from(selectedPaths);
+    // Snapshot originals for revert.
+    const originalsByPath = new Map<string, ProcessResult>();
+    setResults(prev => {
+      for (const r of prev) {
+        if (r.full_path && selectedPaths.has(r.full_path)) {
+          originalsByPath.set(r.full_path, r);
+        }
+      }
+      return prev;
+    });
+
+    // Optimistic predictions.
+    const predictedByOldPath = new Map<string, { full_path: string; url: string | null }>();
+    setResults(prev => prev.map(r => {
+      if (!r.full_path || !selectedPaths.has(r.full_path)) return r;
+      const newFull = `${serverOutputDir}/${target}/${r.filename}`;
+      const newUrl = r.url ? r.url.replace(/\/(sharp|blur|drop|dup)\//, `/${target}/`) : r.url;
+      predictedByOldPath.set(r.full_path, { full_path: newFull, url: newUrl });
+      return { ...r, full_path: newFull, url: newUrl, manual_class: target };
+    }));
+    setSelectedPaths(new Set());
+
     try {
-      const paths = Array.from(selectedPaths);
       const res = await axios.post(`${API_BASE_URL}/reclassify-bulk`, {
         full_paths: paths,
         target,
         output_dir: serverOutputDir,
       });
-      const movedByOldPath = new Map<string, { full_path: string; url: string | null }>();
-      // The backend keys results by basename only, so map by sequence: each
-      // success in `moved` corresponds to a path in `paths` order, minus
-      // failures. Walk both lists in tandem, skipping failed ones.
       const failedSet = new Set((res.data.failed as Array<{ full_path: string }>).map(f => f.full_path));
+      // Reconcile predicted entries with server-confirmed values.
+      const serverByOldPath = new Map<string, { full_path: string; url: string | null }>();
       let mi = 0;
       for (const p of paths) {
         if (failedSet.has(p)) continue;
         const m = res.data.moved[mi++];
-        if (m) movedByOldPath.set(p, { full_path: m.full_path, url: m.url });
+        if (m) serverByOldPath.set(p, { full_path: m.full_path, url: m.url });
       }
       setResults(prev => prev.map(r => {
-        if (!r.full_path || !movedByOldPath.has(r.full_path)) return r;
-        const m = movedByOldPath.get(r.full_path)!;
-        return { ...r, full_path: m.full_path, url: m.url ?? r.url, manual_class: target };
+        // Find by predicted full_path. We tagged manual_class=target during
+        // the optimistic pass, so undo for failed ones.
+        const oldPath = [...predictedByOldPath.entries()].find(([, p]) => p.full_path === r.full_path)?.[0];
+        if (!oldPath) return r;
+        if (failedSet.has(oldPath)) {
+          // Revert this one.
+          return originalsByPath.get(oldPath) ?? r;
+        }
+        const srv = serverByOldPath.get(oldPath);
+        if (!srv) return r;
+        if (srv.full_path === r.full_path && (srv.url ?? null) === (r.url ?? null)) return r;
+        return { ...r, full_path: srv.full_path, url: srv.url ?? r.url };
       }));
-      setSelectedPaths(new Set());
       if (res.data.failed.length > 0) {
         setError(`BULK_PARTIAL: ${res.data.failed.length} of ${paths.length} failed.`);
       }
     } catch (err: any) {
+      // Full revert.
+      setResults(prev => prev.map(r => {
+        const oldPath = [...predictedByOldPath.entries()].find(([, p]) => p.full_path === r.full_path)?.[0];
+        if (!oldPath) return r;
+        return originalsByPath.get(oldPath) ?? r;
+      }));
       setError(`BULK_RECLASSIFY_ERROR: ${err.message}`);
     } finally {
       setBulkBusy(false);
@@ -741,34 +777,90 @@ function App() {
     return results.filter(r => classOf(r) === 'dup');
   }, [results, classOf, tabValue]);
 
+  // Position of the current editing image inside `filteredResults`, by filename.
+  // If the frame was just reclassified out of the active tab, fall back to the
+  // nearest filename — this keeps the counter and arrow-key navigation working
+  // instead of resetting to 1/N.
+  const positionInFiltered = useMemo(() => {
+    if (!editingImage || filteredResults.length === 0) return -1;
+    const exact = filteredResults.findIndex(r => r.filename === editingImage.filename);
+    if (exact >= 0) return exact;
+    const target = editingImage.filename;
+    const after = filteredResults.findIndex(r => r.filename >= target);
+    return after < 0 ? filteredResults.length - 1 : after;
+  }, [editingImage, filteredResults]);
+
   const navigateImage = useCallback((direction: 1 | -1) => {
-    if (!editingImage || filteredResults.length === 0) return;
-    const idx = filteredResults.findIndex(r => r.full_path === editingImage.full_path);
-    if (idx < 0) return;
-    const nextIdx = (idx + direction + filteredResults.length) % filteredResults.length;
+    if (filteredResults.length === 0) return;
+    const cur = positionInFiltered;
+    if (cur < 0) return;
+    const nextIdx = (cur + direction + filteredResults.length) % filteredResults.length;
     const next = filteredResults[nextIdx];
     setEditingImage(next);
     setPoints([]);
     setMaskUrl(null);
-  }, [editingImage, filteredResults]);
+  }, [positionInFiltered, filteredResults]);
+
+  // Auto-advance: when the editing image is no longer in the active tab
+  // (because the user just classified it out of that bucket), jump to the
+  // nearest surviving frame so they keep moving through the queue.
+  useEffect(() => {
+    if (!isMaskEditorOpen || !editingImage || filteredResults.length === 0) return;
+    if (filteredResults.some(r => r.filename === editingImage.filename)) return;
+    const target = editingImage.filename;
+    const next = filteredResults.find(r => r.filename >= target) ?? filteredResults[filteredResults.length - 1];
+    if (next && next.filename !== editingImage.filename) {
+      setEditingImage(next);
+      setPoints([]);
+      setMaskUrl(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredResults, editingImage, isMaskEditorOpen]);
 
   const handleReclassify = useCallback(async (target: Classification) => {
     if (!editingImage?.full_path || !serverOutputDir) return;
+    if (target === 'dup') return;   // dup is set via duplicate-detection workflow
+
+    // Optimistic update: predict the new path/URL and update local state
+    // immediately so keyboard shortcuts feel instant. Reconcile with the
+    // backend response afterwards; revert on failure.
+    const original = editingImage;
+    const originalFullPath = editingImage.full_path;
+    const predictedFullPath = `${serverOutputDir}/${target}/${editingImage.filename}`;
+    const predictedUrl = editingImage.url
+      ? editingImage.url.replace(/\/(sharp|blur|drop|dup)\//, `/${target}/`)
+      : editingImage.url;
+    const optimistic: ProcessResult = {
+      ...editingImage,
+      full_path: predictedFullPath,
+      url: predictedUrl,
+      manual_class: target,
+    };
+    setResults(prev => prev.map(r => (r.full_path === originalFullPath ? optimistic : r)));
+    setEditingImage(optimistic);
+
     try {
       const res = await axios.post(`${API_BASE_URL}/reclassify`, {
-        full_path: editingImage.full_path,
+        full_path: originalFullPath,
         target,
         output_dir: serverOutputDir,
       });
-      const updated: ProcessResult = {
-        ...editingImage,
-        full_path: res.data.full_path,
-        url: res.data.url ?? editingImage.url,
-        manual_class: target,
-      };
-      setResults(prev => prev.map(r => (r.full_path === editingImage.full_path ? updated : r)));
-      setEditingImage(updated);
+      // Reconcile only if the backend disagreed with our prediction.
+      const serverFull: string = res.data.full_path;
+      const serverUrl: string | null = res.data.url ?? null;
+      if (serverFull !== predictedFullPath || (serverUrl ?? null) !== (predictedUrl ?? null)) {
+        const reconciled: ProcessResult = {
+          ...optimistic,
+          full_path: serverFull,
+          url: serverUrl ?? optimistic.url,
+        };
+        setResults(prev => prev.map(r => (r.full_path === predictedFullPath ? reconciled : r)));
+        setEditingImage(prev => (prev && prev.full_path === predictedFullPath ? reconciled : prev));
+      }
     } catch (err: any) {
+      // Revert on failure — UI snaps back to the original.
+      setResults(prev => prev.map(r => (r.full_path === predictedFullPath ? original : r)));
+      setEditingImage(prev => (prev && prev.full_path === predictedFullPath ? original : prev));
       setError(`RECLASSIFY_ERROR: ${err.message}`);
     }
   }, [editingImage, serverOutputDir]);
@@ -1725,8 +1817,8 @@ function App() {
               <ChevronLeftIcon />
             </IconButton>
             <Typography variant="caption" sx={{ minWidth: 70, textAlign: 'center', fontSize: '11px' }}>
-              {editingImage
-                ? `${Math.max(0, filteredResults.findIndex(r => r.full_path === editingImage.full_path)) + 1} / ${filteredResults.length}`
+              {editingImage && filteredResults.length > 0 && positionInFiltered >= 0
+                ? `${positionInFiltered + 1} / ${filteredResults.length}`
                 : '— / —'}
             </Typography>
             <IconButton
