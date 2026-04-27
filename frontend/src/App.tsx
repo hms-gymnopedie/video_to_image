@@ -425,9 +425,16 @@ function App() {
 
   const handleCanvasClick = async (e: React.MouseEvent<HTMLImageElement>) => {
     if (!imgRef.current || !editingImage) return;
-    const rect = imgRef.current.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * (metadata?.width || 1920));
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * (metadata?.height || 1080));
+    const img = imgRef.current;
+    // Use the actual loaded image's pixel dimensions, NOT the source video's
+    // metadata. After a crop is applied at extraction time, the frame on disk
+    // is smaller than the source video, and SAM operates on that frame's
+    // coordinate system — so clicks must map to naturalWidth/Height.
+    const nw = img.naturalWidth || metadata?.width || 1920;
+    const nh = img.naturalHeight || metadata?.height || 1080;
+    const rect = img.getBoundingClientRect();
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * nw);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * nh);
     const newPoints = [...points, [x, y]];
     setPoints(newPoints);
     await runSegment(newPoints);
@@ -1736,8 +1743,13 @@ function App() {
                 <img ref={imgRef} src={`${API_BASE_URL}${editingImage.url}`} style={{ maxWidth: '100%', display: 'block', margin: '0 auto', cursor: 'crosshair' }} onClick={handleCanvasClick} />
                 {maskUrl && <img src={maskUrl} style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: imgRef.current?.clientWidth, height: imgRef.current?.clientHeight, pointerEvents: 'none', opacity: 0.6 }} />}
                 {points.map((p, i) => {
-                  const left = (p[0] / (metadata?.width || 1)) * (imgRef.current?.clientWidth || 1);
-                  const top = (p[1] / (metadata?.height || 1)) * (imgRef.current?.clientHeight || 1);
+                  // Same source-of-truth as handleCanvasClick: use the loaded
+                  // image's natural pixel size so the dot lands exactly under
+                  // the cursor, regardless of crop / resize.
+                  const nw = imgRef.current?.naturalWidth || metadata?.width || 1;
+                  const nh = imgRef.current?.naturalHeight || metadata?.height || 1;
+                  const left = (p[0] / nw) * (imgRef.current?.clientWidth || 1);
+                  const top  = (p[1] / nh) * (imgRef.current?.clientHeight || 1);
                   return (
                     <React.Fragment key={i}>
                       {/* exact-click dot (small, so tiny objects remain visible) */}

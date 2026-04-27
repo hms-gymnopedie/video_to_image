@@ -38,6 +38,14 @@
   reverts on failure). Bulk reclassify (`/reclassify-bulk`) uses the same
   pattern. This eliminates the perceived input lag where the backend GET
   appeared immediately but the UI waited for the JSON round-trip.
+- **Fixed:** SAM clicks pointing to the wrong object after a crop was applied.
+  The mask editor's click handler and point-marker renderer were converting
+  screen → image pixels using `metadata.width / height` (the **source video**
+  dimensions). After cropping, the extracted frames are smaller than the
+  source, so the mapped coordinates landed outside the actual frame and SAM
+  segmented the wrong region. Both call sites now read
+  `imgRef.current.naturalWidth / naturalHeight` (the loaded image's true pixel
+  size), which is correct regardless of crop / resize.
 - **Updated:** Versioning to V4.4.0.
 
 ## [2026-04-27] Update V4.3.0 — UX: stage navigator + SYNC relocation
