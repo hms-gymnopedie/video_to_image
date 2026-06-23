@@ -1326,9 +1326,9 @@ function App() {
                 <Button fullWidth variant="contained" size="large" sx={{ py: 1.5, bgcolor: '#4A4238' }} onClick={handleProcess} disabled={!fileId || processing || isModelLoading}>
                   {processing ? <CircularProgress size={24} color="inherit" /> : 'START_PIPELINE'}
                 </Button>
-                {/* APPLY & SYNC FOLDERS is rendered under the classified frames
-                    grid (section [03]) so the user can re-apply the threshold
-                    after reviewing the actual sharp/blur split. */}
+                {/* APPLY THRESHOLD & SYNC lives above the frame grid in section
+                    [03]: re-split sharp/blur by threshold first, then hand-tune
+                    frames below (manual picks are preserved on sync). */}
               </Paper>
             </Grid>
 
@@ -1430,6 +1430,32 @@ function App() {
                   </Tabs>
                 </Box>
 
+                {/* Re-apply the threshold to the AUTO split FIRST, then
+                    hand-tune the frames below. Manual picks plus the drop and
+                    dup buckets are respected and never moved by this. Hidden
+                    until the pipeline has produced results. */}
+                {results.length > 0 && (
+                  <Box sx={{ mb: 2, pb: 2, borderBottom: '1px dashed #E6E1D6', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
+                    <Typography variant="caption" color="textSecondary" sx={{ flexGrow: 1, fontSize: '11px' }}>
+                      Adjusted the threshold? Re-apply it to re-split <code>sharp/</code> and <code>blur/</code>.
+                      <br />
+                      <Box component="span" sx={{ opacity: 0.7 }}>
+                        Manual picks, <code>drop/</code> and <code>dup/</code> are preserved.
+                      </Box>
+                    </Typography>
+                    <Button
+                      variant="outlined"
+                      startIcon={syncing ? <CircularProgress size={16}/> : <SyncIcon />}
+                      onClick={handleSyncFolders}
+                      disabled={syncing || processing}
+                      sx={{ minWidth: 220 }}
+                    >
+                      {syncing ? 'SYNCING...' : 'APPLY THRESHOLD & SYNC'}
+                    </Button>
+                  </Box>
+                )}
+
+                <Box sx={{ maxHeight: '58vh', overflowY: 'auto', pr: 0.5 }}>
                 <Grid container spacing={1.5}>
                   {results.length > 0 ? (
                     filteredResults.map((res, index) => {
@@ -1485,29 +1511,7 @@ function App() {
                     })
                   ) : !processing && <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '400px', opacity: 0.2 }}><ImageIcon sx={{ fontSize: 64 }} /></Box>}
                 </Grid>
-
-                {/* Footer: re-apply threshold AFTER reviewing the sharp/blur
-                    split. Hidden until the pipeline has produced results. */}
-                {results.length > 0 && (
-                  <Box sx={{ mt: 3, pt: 2, borderTop: '1px dashed #E6E1D6', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
-                    <Typography variant="caption" color="textSecondary" sx={{ flexGrow: 1, fontSize: '11px' }}>
-                      Adjusted the threshold? Re-apply it to physically move frames between sharp/ and blur/.
-                      <br />
-                      <Box component="span" sx={{ opacity: 0.7 }}>
-                        Frames already moved to <code>drop/</code> are preserved.
-                      </Box>
-                    </Typography>
-                    <Button
-                      variant="outlined"
-                      startIcon={syncing ? <CircularProgress size={16}/> : <SyncIcon />}
-                      onClick={handleSyncFolders}
-                      disabled={syncing || processing}
-                      sx={{ minWidth: 220 }}
-                    >
-                      {syncing ? 'SYNCING...' : 'APPLY & SYNC FOLDERS'}
-                    </Button>
-                  </Box>
-                )}
+                </Box>
               </Paper>
 
               {/* ======================================================== */}

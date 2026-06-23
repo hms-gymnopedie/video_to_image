@@ -778,10 +778,10 @@ async def reclassify_bulk(req: BulkReclassifyRequest):
 async def sync(data: dict):
     """Re-apply blur threshold to existing results.
 
-    Frames currently in `drop/` or `dup/` are NEVER touched — those are
-    user-curated decisions (manual discard or auto-detected duplicate) and the
-    threshold slider must not undo them. Files in `sharp/` and `blur/` are
-    reshuffled by the new threshold.
+    User-curated decisions are NEVER overridden by the threshold:
+      - frames in `drop/` or `dup/` (manual discard / auto-detected duplicate)
+      - frames the user manually classified (``manual_class`` set on the result)
+    Only auto-classified frames in `sharp/`/`blur/` are reshuffled.
     """
     sd = os.path.join(data["output_dir"], "sharp")
     bd = os.path.join(data["output_dir"], "blur")
@@ -789,6 +789,10 @@ async def sync(data: dict):
     ud = os.path.join(data["output_dir"], "dup")
     for r in data["results"]:
         fn = r["filename"]
+        # Respect manual classification — the threshold must not undo a bucket
+        # the user chose by hand.
+        if r.get("manual_class"):
+            continue
         # Skip anything already in drop/ or dup/.
         if os.path.exists(os.path.join(dd, fn)) or os.path.exists(os.path.join(ud, fn)):
             continue
