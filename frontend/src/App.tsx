@@ -46,6 +46,7 @@ import {
   Visibility as PreviewIcon,
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
+  Done as DoneIcon,
 } from '@mui/icons-material';
 import { FormControlLabel, Checkbox, ButtonGroup } from '@mui/material';
 import { SimpleTreeView } from '@mui/x-tree-view/SimpleTreeView';
@@ -54,8 +55,11 @@ import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 import { BarChart, Bar, XAxis, YAxis, Tooltip as ChartTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 
-const API_BASE_URL = 'http://localhost:8080';
-const WS_BASE_URL = 'ws://localhost:8080';
+// Use 127.0.0.1, not "localhost": on macOS "localhost" resolves to IPv6 ::1
+// first, but the backend binds IPv4 only — that mismatch makes WS connections
+// flaky/rejected even while HTTP falls back to IPv4.
+const API_BASE_URL = 'http://127.0.0.1:8080';
+const WS_BASE_URL = 'ws://127.0.0.1:8080';
 
 const sandTheme = createTheme({
   palette: {
@@ -376,6 +380,9 @@ function App() {
     setMaskInfo(null); setPropagateStatus(null); setTextBatchStatus(null);
     setSelectedPaths(new Set()); setDupCandidates([]); setDupCount(0);
     const ws = new WebSocket(`${WS_BASE_URL}/ws/process/${fileId}`);
+    // Track whether we reached a terminal state (complete/error) so onclose
+    // can tell a clean finish from a dropped/rejected connection.
+    let settled = false;
     ws.onopen = () => ws.send(JSON.stringify({
       fps,
       threshold,
@@ -388,10 +395,26 @@ function App() {
         setProgressMsg(data.message);
         if (data.current) setCurrentProgress(data.current);
       } else if (data.type === 'complete') {
+        settled = true;
         setResults(data.results); setServerOutputDir(data.output_dir); setProcessing(false); fetchDirectories(); ws.close();
       } else if (data.type === 'error') {
+        settled = true;
         setError(`PROCESS_ERROR: ${data.message}`); setProcessing(false); ws.close();
       }
+    };
+    // Without these, a refused/dropped WS leaves `processing` true forever —
+    // i.e. the spinner never stops. Surface it instead.
+    ws.onerror = () => {
+      if (settled) return;
+      settled = true;
+      setError('CONNECTION_ERROR: WebSocket 연결 실패 (백엔드가 :8080에서 실행 중인지 확인하세요)');
+      setProcessing(false);
+    };
+    ws.onclose = (e) => {
+      if (settled) return;
+      settled = true;
+      setError(`CONNECTION_CLOSED: 처리가 끝나기 전에 연결이 끊겼습니다 (code ${e.code})`);
+      setProcessing(false);
     };
   };
 
@@ -444,6 +467,25 @@ function App() {
     const newPoints = points.filter((_, i) => i !== idx);
     setPoints(newPoints);
     await runSegment(newPoints);
+  };
+
+  // Finalize the editor: drop every per-click preview PNG on the backend,
+  // clear the local mask overlay + points, and close the dialog. Used when
+  // the user is done picking points and wants to discard the disposable
+  // overlay debris in backend/masks/preview/.
+  const handleFinalizeEditor = async () => {
+    try {
+      const res = await axios.post(`${API_BASE_URL}/cleanup-previews`);
+      console.log(`[FINALIZE] removed ${res.data?.removed ?? 0} preview files`);
+    } catch (err: any) {
+      // Surface the error but still close the editor — the previews are
+      // disposable, so a cleanup failure should not block the user.
+      console.warn('[FINALIZE] cleanup failed:', err?.message ?? err);
+    } finally {
+      setPoints([]);
+      setMaskUrl(null);
+      setIsMaskEditorOpen(false);
+    }
   };
 
   // --------------------------------------------------- Phase 2: propagate
@@ -1877,6 +1919,16 @@ function App() {
           </Box>
           <Box sx={{ display: 'flex', gap: 1 }}>
             <Button onClick={() => setIsMaskEditorOpen(false)} disabled={propagating}>Close</Button>
+            <Button
+              variant="outlined"
+              color="success"
+              startIcon={<DoneIcon />}
+              onClick={handleFinalizeEditor}
+              disabled={propagating || isSegmenting}
+              title="Close the editor and delete every per-click preview overlay"
+            >
+              최종 반영
+            </Button>
             <Button
               variant="contained"
               color="primary"

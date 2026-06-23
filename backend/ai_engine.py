@@ -15,6 +15,7 @@ Exposes:
 """
 import os
 import functools
+from contextlib import nullcontext
 from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
@@ -65,6 +66,20 @@ def get_device() -> str:
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _autocast_for(device: str):
+    """Mixed-precision context appropriate for the active device.
+
+    CUDA uses bf16 (SAM2 reference setup). MPS uses fp16 — the only dtype
+    Apple supports for autocast. CPU stays full precision because bf16/cpu
+    autocast typically slows SAM2 down rather than speeding it up.
+    """
+    if device == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    if device == "mps":
+        return torch.autocast(device_type="mps", dtype=torch.float16)
+    return nullcontext()
 
 
 def resolve_model_size(name: str) -> str:
@@ -348,7 +363,7 @@ class SAMEngine:
         if labels is None:
             labels = [1] * len(points)
 
-        with torch.inference_mode():
+        with torch.inference_mode(), _autocast_for(self.device):
             self.image_predictor.set_image(img_rgb)
             masks, scores, _ = self.image_predictor.predict(
                 point_coords=np.array(points, dtype=np.float32),
@@ -417,7 +432,7 @@ class SAMEngine:
             raise FileNotFoundError(image_path)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        with torch.inference_mode():
+        with torch.inference_mode(), _autocast_for(self.device):
             self.image_predictor.set_image(img_rgb)
             masks, scores, _ = self.image_predictor.predict(
                 box=boxes.astype(np.float32),
@@ -484,7 +499,7 @@ class SAMEngine:
                 except OSError:
                     shutil.copy2(src, link)
 
-            with torch.inference_mode():
+            with torch.inference_mode(), _autocast_for(self.device):
                 state = self.video_predictor.init_state(video_path=staging)
                 self.video_predictor.add_new_points_or_box(
                     inference_state=state,

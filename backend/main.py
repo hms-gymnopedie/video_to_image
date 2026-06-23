@@ -49,25 +49,15 @@ app.add_middleware(
 engine = SAMEngine()
 
 
-def _cleanup_upload(file_id: str) -> None:
-    """Remove the uploaded source video for a given file_id."""
-    try:
-        for f in os.listdir(UPLOAD_DIR):
-            if f.startswith(file_id):
-                try:
-                    os.remove(os.path.join(UPLOAD_DIR, f))
-                except OSError as e:
-                    print(f"[CLEANUP] upload remove failed {f}: {e}")
-    except FileNotFoundError:
-        pass
+def _cleanup_segment_previews() -> int:
+    """Wipe the per-click mask editor preview debris in backend/masks/preview/.
 
-
-def _cleanup_segment_previews() -> None:
-    """Wipe the per-click mask editor preview debris in backend/masks/preview/."""
+    Returns the number of files actually deleted.
+    """
+    removed = 0
     try:
         if not os.path.isdir(PREVIEW_DIR):
-            return
-        removed = 0
+            return 0
         for f in os.listdir(PREVIEW_DIR):
             p = os.path.join(PREVIEW_DIR, f)
             if os.path.isfile(p):
@@ -80,6 +70,7 @@ def _cleanup_segment_previews() -> None:
             print(f"[CLEANUP] removed {removed} editor preview files")
     except FileNotFoundError:
         pass
+    return removed
 
 
 @app.on_event("startup")
@@ -149,6 +140,13 @@ async def create_dir(data: dict):
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
+    # One active video at a time — prune previous uploads so re-runs keep their
+    # source (we no longer delete it post-process) without unbounded disk growth.
+    for f in os.listdir(UPLOAD_DIR):
+        try:
+            os.remove(os.path.join(UPLOAD_DIR, f))
+        except OSError as e:
+            print(f"[UPLOAD] prune failed {f}: {e}")
     file_id = str(uuid.uuid4())
     path = os.path.join(UPLOAD_DIR, f"{file_id}{os.path.splitext(file.filename)[1]}")
     with open(path, "wb") as b:
@@ -200,10 +198,17 @@ async def ws_process(ws: WebSocket, file_id: str):
         crop_active = crop_w > 0 and crop_h > 0
 
         vid = next(
-            os.path.join(UPLOAD_DIR, f)
-            for f in os.listdir(UPLOAD_DIR)
-            if f.startswith(file_id)
+            (
+                os.path.join(UPLOAD_DIR, f)
+                for f in os.listdir(UPLOAD_DIR)
+                if f.startswith(file_id)
+            ),
+            None,
         )
+        if vid is None:
+            raise FileNotFoundError(
+                "원본 영상을 찾을 수 없습니다. 영상을 다시 업로드한 뒤 실행하세요."
+            )
         base = os.path.abspath(out) if out else os.path.join(os.path.abspath(OUTPUT_DIR), file_id)
         os.makedirs(base, exist_ok=True)
 
@@ -267,8 +272,9 @@ async def ws_process(ws: WebSocket, file_id: str):
             if i % 10 == 0:
                 await ws.send_json({"type": "progress", "current": i + 1, "total": len(files)})
         shutil.rmtree(tmp)
-        # Source video is no longer needed — frames are on disk.
-        _cleanup_upload(file_id)
+        # Keep the source video so the user can re-run with a different
+        # threshold/crop without re-uploading. Stale uploads are pruned when a
+        # new video is uploaded (see /upload).
         await ws.send_json({"type": "complete", "results": res, "output_dir": base})
     except Exception as e:
         traceback.print_exc()
@@ -586,6 +592,18 @@ async def ws_segment_text_batch(ws: WebSocket):
             await ws.send_json({"type": "error", "message": str(e)})
         except Exception:
             pass
+
+
+# ---------------------------------------------- Editor preview cleanup
+@app.post("/cleanup-previews")
+async def cleanup_previews():
+    """Drop every per-click overlay PNG in backend/masks/preview/.
+
+    Fired by the mask editor's FINALIZE button to clear the disposable
+    preview debris once the user is done with point picking.
+    """
+    removed = await asyncio.to_thread(_cleanup_segment_previews)
+    return {"removed": removed}
 
 
 # ---------------------------------------------- Mask preview (Phase 1+4 verify)
@@ -955,4 +973,7 @@ app.mount("/masks", StaticFiles(directory=MASK_DIR), name="masks")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    # websockets>=14 removed the legacy interface uvicorn's default "auto"/
+    # "websockets" impl relied on, which makes the WS handshake fail with
+    # "connection rejected (400 Bad Request)". The sansio impl is compatible.
+    uvicorn.run(app, host="0.0.0.0", port=8080, ws="websockets-sansio")
